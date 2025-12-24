@@ -1,0 +1,14 @@
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics
+opencv-python
+supervision
+scikit-image
+numpy
+pandas
+streamlit
+pillow
+hydra-core
+# sam2 and grounded-sam might need git installations, we will assume they are handled or add them here if pypi available
+# git+https://github.com/facebookresearch/segment-anything-2.git
+# git+https://github.com/IDEA-Research/GroundingDINO.git

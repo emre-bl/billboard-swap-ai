@@ -1,0 +1,10 @@
+*.pth
+*.json
+*.pyc
+/pyvenv39
+/runs
+/train
+/valid
+*.pt
+*.mp4
+*.png
