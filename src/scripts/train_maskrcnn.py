@@ -1,82 +1,125 @@
+"""
+Mask R-CNN Training Script for Billboard Segmentation.
+
+Uses PyTorch and torchvision's Mask R-CNN with ResNet50-FPN backbone.
+"""
+import os
+import argparse
+import json
 import torch
+import numpy as np
+from pathlib import Path
+from PIL import Image
+from torch.utils.data import Dataset, DataLoader
 import torchvision
 from torchvision.models.detection import maskrcnn_resnet50_fpn
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
-from torch.utils.data import DataLoader, Dataset
-from pycocotools.coco import COCO
-import cv2
-import numpy as np
-import os
-import yaml
+import torchvision.transforms as T
+
 
 class BillboardDataset(Dataset):
-    def __init__(self, annotation_file, img_dir, transforms=None):
-        self.coco = COCO(annotation_file)
-        self.img_dir = img_dir
-        self.transforms = transforms
-        # Filter out images without annotations
-        self.ids = []
-        for img_id in sorted(self.coco.imgs.keys()):
-            ann_ids = self.coco.getAnnIds(imgIds=img_id)
-            if len(ann_ids) > 0:
-                self.ids.append(img_id)
-        print(f"Loaded {len(self.ids)} images with annotations")
+    """Dataset for billboard segmentation in COCO format."""
     
-    def __getitem__(self, index):
-        img_id = self.ids[index]
-        ann_ids = self.coco.getAnnIds(imgIds=img_id)
-        anns = self.coco.loadAnns(ann_ids)
-        img_info = self.coco.loadImgs(img_id)[0]
+    def __init__(self, images_dir: str, annotations_file: str, transforms=None):
+        self.images_dir = Path(images_dir)
+        self.transforms = transforms
+        
+        # Load COCO annotations
+        with open(annotations_file, 'r') as f:
+            coco_data = json.load(f)
+        
+        self.images = {img['id']: img for img in coco_data['images']}
+        self.annotations = {}
+        
+        for ann in coco_data['annotations']:
+            img_id = ann['image_id']
+            if img_id not in self.annotations:
+                self.annotations[img_id] = []
+            self.annotations[img_id].append(ann)
+        
+        self.image_ids = list(self.images.keys())
+    
+    def __len__(self):
+        return len(self.image_ids)
+    
+    def __getitem__(self, idx):
+        img_id = self.image_ids[idx]
+        img_info = self.images[img_id]
         
         # Load image
-        img_path = os.path.join(self.img_dir, img_info['file_name'])
-        img = cv2.imread(img_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = torch.as_tensor(img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+        img_path = self.images_dir / img_info['file_name']
+        img = Image.open(img_path).convert("RGB")
+        img = np.array(img)
         
-        # Get boxes and masks
+        # Get annotations
+        anns = self.annotations.get(img_id, [])
+        
         boxes = []
-        labels = []
         masks = []
+        labels = []
         
         for ann in anns:
+            # Bounding box [x, y, width, height] -> [x1, y1, x2, y2]
             x, y, w, h = ann['bbox']
-            # Skip invalid boxes
-            if w <= 0 or h <= 0:
-                continue
             boxes.append([x, y, x + w, y + h])
-            labels.append(ann['category_id'])
             
-            # Create mask from segmentation
-            mask = self.coco.annToMask(ann)
-            masks.append(mask)
+            # Segmentation mask
+            if 'segmentation' in ann:
+                mask = self._decode_segmentation(
+                    ann['segmentation'], 
+                    img_info['height'], 
+                    img_info['width']
+                )
+                masks.append(mask)
+            
+            # Category (all billboards = class 1)
+            labels.append(1)
         
-        # Ensure we have at least one valid annotation
-        if len(boxes) == 0:
-            # Create a dummy box (this shouldn't happen after filtering)
-            boxes = torch.zeros((0, 4), dtype=torch.float32)
-            labels = torch.zeros((0,), dtype=torch.int64)
-            masks = torch.zeros((0, img_info['height'], img_info['width']), dtype=torch.uint8)
+        # Convert to tensors
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
+        
+        if masks:
+            masks = torch.as_tensor(np.stack(masks), dtype=torch.uint8)
         else:
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            labels = torch.as_tensor(labels, dtype=torch.int64)
-            masks = torch.as_tensor(np.array(masks), dtype=torch.uint8)
+            masks = torch.zeros((0, img_info['height'], img_info['width']), dtype=torch.uint8)
         
         target = {
-            "boxes": boxes,
-            "labels": labels,
-            "masks": masks,
-            "image_id": torch.tensor([img_id])
+            'boxes': boxes,
+            'labels': labels,
+            'masks': masks,
+            'image_id': torch.tensor([img_id]),
         }
+        
+        # Convert image to tensor
+        img = torch.as_tensor(img, dtype=torch.float32).permute(2, 0, 1) / 255.0
+        
+        if self.transforms:
+            img, target = self.transforms(img, target)
         
         return img, target
     
-    def __len__(self):
-        return len(self.ids)
+    def _decode_segmentation(self, segmentation, height, width):
+        """Decode COCO segmentation to binary mask."""
+        import pycocotools.mask as mask_utils
+        
+        if isinstance(segmentation, list):
+            # Polygon format
+            rles = mask_utils.frPyObjects(segmentation, height, width)
+            rle = mask_utils.merge(rles)
+        else:
+            # RLE format
+            rle = segmentation
+        
+        mask = mask_utils.decode(rle)
+        return mask
 
-def get_model(num_classes):
-    # Load pre-trained Mask R-CNN
+
+def get_model(num_classes: int = 2):
+    """Create Mask R-CNN model with custom head."""
+    
+    # Load pretrained model
     model = maskrcnn_resnet50_fpn(weights='DEFAULT')
     
     # Replace box predictor
@@ -92,96 +135,216 @@ def get_model(num_classes):
     
     return model
 
-def train_one_epoch(model, optimizer, data_loader, device, epoch):
-    model.train()
-    total_loss = 0
-    valid_batches = 0
-    
-    for i, (images, targets) in enumerate(data_loader):
-        # Filter out empty targets
-        valid_indices = [j for j, t in enumerate(targets) if len(t['boxes']) > 0]
-        
-        if len(valid_indices) == 0:
-            continue
-            
-        images = [images[j].to(device) for j in valid_indices]
-        targets = [{k: v.to(device) for k, v in targets[j].items()} for j in valid_indices]
-        
-        try:
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
-            
-            optimizer.zero_grad()
-            losses.backward()
-            optimizer.step()
-            
-            total_loss += losses.item()
-            valid_batches += 1
-            
-            if i % 10 == 0:
-                print(f"Epoch {epoch}, Batch {i}/{len(data_loader)}, Loss: {losses.item():.4f}")
-        except Exception as e:
-            print(f"Error in batch {i}: {e}")
-            continue
-    
-    return total_loss / max(valid_batches, 1)
 
-def main():
-    # Load data.yaml
-    with open('data.yaml', 'r') as f:
-        data_config = yaml.safe_load(f)
+def collate_fn(batch):
+    """Custom collate function for detection."""
+    return tuple(zip(*batch))
+
+
+def train_one_epoch(model, optimizer, data_loader, device, epoch):
+    """Train for one epoch."""
+    model.train()
     
-    num_classes = data_config['nc'] + 1  # +1 for background
+    total_loss = 0
+    num_batches = 0
     
-    # Get image directories
-    base_dir = os.path.dirname(os.path.abspath('data.yaml'))
-    train_img_dir = os.path.join(base_dir, data_config['train'].replace('../', ''))
-    val_img_dir = os.path.join(base_dir, data_config['val'].replace('../', ''))
+    for images, targets in data_loader:
+        images = list(img.to(device) for img in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        
+        optimizer.zero_grad()
+        losses.backward()
+        optimizer.step()
+        
+        total_loss += losses.item()
+        num_batches += 1
+        
+        if num_batches % 10 == 0:
+            print(f"  Epoch {epoch} - Batch {num_batches}: Loss = {losses.item():.4f}")
     
-    # Create datasets
-    train_dataset = BillboardDataset('train_coco.json', train_img_dir)
-    val_dataset = BillboardDataset('val_coco.json', val_img_dir)
+    return total_loss / num_batches
+
+
+@torch.no_grad()
+def evaluate(model, data_loader, device):
+    """Evaluate model on validation set."""
+    model.eval()
     
-    # Create data loaders
-    train_loader = DataLoader(
-        train_dataset, batch_size=2, shuffle=True,
-        num_workers=0, collate_fn=lambda x: tuple(zip(*x))
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=1, shuffle=False,
-        num_workers=0, collate_fn=lambda x: tuple(zip(*x))
-    )
+    # Simple evaluation - just compute loss
+    total_loss = 0
+    num_batches = 0
     
-    # Setup device and model
+    for images, targets in data_loader:
+        images = list(img.to(device) for img in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        
+        # Get losses in training mode briefly
+        model.train()
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        model.eval()
+        
+        total_loss += losses.item()
+        num_batches += 1
+    
+    return total_loss / num_batches if num_batches > 0 else float('inf')
+
+
+def train_maskrcnn(
+    train_images: str,
+    train_annotations: str,
+    val_images: str = None,
+    val_annotations: str = None,
+    epochs: int = 50,
+    batch_size: int = 4,
+    lr: float = 0.005,
+    output_dir: str = "maskrcnn_trained_models",
+):
+    """Train Mask R-CNN for billboard segmentation."""
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    model = get_model(num_classes)
+    # Create output directory
+    output_path = Path(output_dir)
+    output_path.mkdir(exist_ok=True)
+    
+    # Create datasets
+    train_dataset = BillboardDataset(train_images, train_annotations)
+    train_loader = DataLoader(
+        train_dataset, 
+        batch_size=batch_size, 
+        shuffle=True,
+        num_workers=4,
+        collate_fn=collate_fn
+    )
+    
+    val_loader = None
+    if val_images and val_annotations:
+        val_dataset = BillboardDataset(val_images, val_annotations)
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=4,
+            collate_fn=collate_fn
+        )
+    
+    # Create model
+    model = get_model(num_classes=2)  # background + billboard
     model.to(device)
     
     # Optimizer
     params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+    optimizer = torch.optim.SGD(params, lr=lr, momentum=0.9, weight_decay=0.0005)
     
-    # Training loop
-    num_epochs = 10
+    # Learning rate scheduler
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
     
-    for epoch in range(num_epochs):
-        print(f"\nEpoch {epoch + 1}/{num_epochs}")
-        avg_loss = train_one_epoch(model, optimizer, train_loader, device, epoch + 1)
+    best_val_loss = float('inf')
+    patience_counter = 0
+    patience = 10  # Default patience or passed as arg
+    
+    print(f"\n{'='*60}")
+    print("Training Mask R-CNN for Billboard Segmentation")
+    print(f"{'='*60}")
+    print(f"  Epochs: {epochs}")
+    print(f"  Batch size: {batch_size}")
+    print(f"  Learning rate: {lr}")
+    print(f"  Train images: {len(train_dataset)}")
+    if val_loader:
+        print(f"  Val images: {len(val_dataset)}")
+    print(f"{'='*60}\n")
+    
+    for epoch in range(1, epochs + 1):
+        print(f"\nEpoch {epoch}/{epochs}")
+        
+        # Train
+        train_loss = train_one_epoch(model, optimizer, train_loader, device, epoch)
+        print(f"  Train loss: {train_loss:.4f}")
+        
+        # Validate
+        if val_loader:
+            val_loss = evaluate(model, val_loader, device)
+            print(f"  Val loss: {val_loss:.4f}")
+            
+            # Save best model and check early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0  # Reset counter
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'val_loss': val_loss,
+                }, output_path / 'best.pth')
+                print(f"  ✓ Saved best model (val_loss: {val_loss:.4f})")
+            else:
+                patience_counter += 1
+                print(f"  ! Validation loss did not improve ({patience_counter}/{patience})")
+                
+                if patience_counter >= patience:
+                    print(f"\n[Early Stopping] No improvement for {patience} epochs. Stopping.")
+                    break
+        
         lr_scheduler.step()
         
-        print(f"Average Loss: {avg_loss:.4f}")
-        
-        # Save checkpoint
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-        }, f'maskrcnn_trained_models/maskrcnn_billboard_epoch_{epoch + 1}.pth')
+        # Save checkpoint every 10 epochs
+        if epoch % 10 == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, output_path / f'epoch_{epoch}.pth')
     
-    print("\nTraining completed!")
+    # Save final model state (even if stopped early, save the 'last' state)
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, output_path / 'last.pth')
+    
+    print(f"\n✓ Training complete!")
+    print(f"  Best model: {output_path / 'best.pth'}")
+    print(f"  Last model: {output_path / 'last.pth'}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train Mask R-CNN for Billboard Segmentation")
+    
+    parser.add_argument("--train-images", type=str, required=True,
+                        help="Path to training images directory")
+    parser.add_argument("--train-annotations", type=str, required=True,
+                        help="Path to training annotations (COCO JSON)")
+    parser.add_argument("--val-images", type=str, default=None,
+                        help="Path to validation images directory")
+    parser.add_argument("--val-annotations", type=str, default=None,
+                        help="Path to validation annotations (COCO JSON)")
+    parser.add_argument("--epochs", type=int, default=50,
+                        help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=4,
+                        help="Batch size")
+    parser.add_argument("--lr", type=float, default=0.005,
+                        help="Learning rate")
+    parser.add_argument("--output-dir", type=str, default="maskrcnn_trained_models",
+                        help="Output directory for trained models")
+    
+    args = parser.parse_args()
+    
+    train_maskrcnn(
+        train_images=args.train_images,
+        train_annotations=args.train_annotations,
+        val_images=args.val_images,
+        val_annotations=args.val_annotations,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        lr=args.lr,
+        output_dir=args.output_dir,
+    )
+
 
 if __name__ == "__main__":
     main()
