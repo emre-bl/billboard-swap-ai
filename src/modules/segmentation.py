@@ -71,16 +71,18 @@ class YOLOSegmenter(BaseSegmenter):
     ):
         from ultralytics import YOLO
         
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         if model_path and Path(model_path).exists():
-            self.model = YOLO(model_path)
+            self.model = YOLO(model_path).to(self.device)
         else:
             # Use pretrained model
-            self.model = YOLO(f"yolov8{variant}-seg.pt")
+            self.model = YOLO(f"yolov8{variant}-seg.pt").to(self.device)
         
+        print(f"YOLO Segmenter initialized on {self.device}")
         self._confidences = []  # Store confidences for select_best
     
     def segment(self, frame: np.ndarray, conf: float = 0.55) -> List[np.ndarray]:
-        results = self.model.predict(frame, conf=conf, verbose=False)
+        results = self.model.predict(frame, conf=conf, device=self.device, verbose=False)
         
         masks = []
         self._confidences = []
@@ -208,16 +210,18 @@ class GroundedSAMSegmenter(BaseSegmenter):
     ):
         from ultralytics import YOLO, SAM
         
-        self.grounding_model = YOLO(grounding_model_path)
-        self.sam_model = SAM(sam_model_path)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.grounding_model = YOLO(grounding_model_path).to(self.device)
+        self.sam_model = SAM(sam_model_path).to(self.device)
         self.text_prompt = text_prompt
+        print(f"GroundedSAM Segmenter initialized on {self.device}")
     
     def segment(self, frame: np.ndarray, conf: float = 0.55) -> List[np.ndarray]:
         # Set classes for zero-shot detection
         self.grounding_model.set_classes([self.text_prompt])
         
         # Detect bounding boxes
-        results = self.grounding_model.predict(frame, conf=conf, verbose=False)
+        results = self.grounding_model.predict(frame, conf=conf, device=self.device, verbose=False)
         
         if not results or not results[0].boxes:
             return []
@@ -228,7 +232,7 @@ class GroundedSAMSegmenter(BaseSegmenter):
             return []
         
         # Segment using SAM with box prompts
-        sam_results = self.sam_model.predict(frame, bboxes=bboxes, verbose=False)
+        sam_results = self.sam_model.predict(frame, bboxes=bboxes, device=self.device, verbose=False)
         
         masks = []
         if sam_results and sam_results[0].masks is not None:
@@ -247,11 +251,13 @@ class SAM2Segmenter(BaseSegmenter):
     
     def __init__(self, model_path: str = "sam2_b.pt"):
         from ultralytics import SAM
-        self.model = SAM(model_path)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = SAM(model_path).to(self.device)
+        print(f"SAM2 Segmenter initialized on {self.device}")
     
     def segment(self, frame: np.ndarray, conf: float = 0.55) -> List[np.ndarray]:
         # Auto-segmentation (segment everything)
-        results = self.model.predict(frame, verbose=False)
+        results = self.model.predict(frame, device=self.device, verbose=False)
         
         masks = []
         if results and results[0].masks is not None:
@@ -270,7 +276,7 @@ class SAM2Segmenter(BaseSegmenter):
     
     def segment_with_box(self, frame: np.ndarray, bbox: List[float]) -> Optional[np.ndarray]:
         """Segment using a bounding box prompt."""
-        results = self.model.predict(frame, bboxes=[bbox], verbose=False)
+        results = self.model.predict(frame, bboxes=[bbox], device=self.device, verbose=False)
         
         if results and results[0].masks is not None:
             mask = results[0].masks.data[0].cpu().numpy()

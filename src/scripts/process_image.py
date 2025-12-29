@@ -55,7 +55,7 @@ def main():
     # Initialize Segmenter
     segmenter = None
     if args.model_type == "yolo":
-        model_path = args.model_path or f"runs/segment/billboard_yolov8{args.yolo_variant}_seg/weights/best.pt"
+        model_path = args.model_path or f"models/yolov8{args.yolo_variant}_seg_best.pt"
         print(f"Loading YOLOv8{args.yolo_variant}-seg ({model_path})...")
         segmenter = YOLOSegmenter(model_path=model_path, variant=args.yolo_variant)
         

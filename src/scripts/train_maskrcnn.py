@@ -39,6 +39,9 @@ class BillboardDataset(Dataset):
             self.annotations[img_id].append(ann)
         
         self.image_ids = list(self.images.keys())
+        # Filter images without annotations to prevent training crash
+        self.image_ids = self._filter_invalid_images(coco_data)
+        print(f"Loaded {len(self.image_ids)} images with annotations (filtered from {len(self.images)})")
     
     def __len__(self):
         return len(self.image_ids)
@@ -97,8 +100,29 @@ class BillboardDataset(Dataset):
         
         if self.transforms:
             img, target = self.transforms(img, target)
-        
+        if self.transforms:
+            img, target = self.transforms(img, target)
+            
+        # Check if target is valid for RPN (must have boxes)
+        if target['boxes'].shape[0] == 0:
+            # Mask R-CNN training logic in torchvision generally expects at least one box per image
+            # OR we need to handle negative samples correctly.
+            # Standard generalized_rcnn.py asserts boxes.shape[0] > 0 during training in some versions or setup.
+            # To be safe, we can try to skip this image or treat it as pure background if the model supports it.
+            # However, the error `Expected target boxes to be a tensor of shape [N, 4], got torch.Size([0])`
+            # confirms strict requirement.
+            # Use specific invalid flag or filter in __init__.
+            pass 
+
         return img, target
+
+    def _filter_invalid_images(self, coco_data):
+        valid_ids = []
+        for img_id in self.image_ids:
+            anns = self.annotations.get(img_id, [])
+            if len(anns) > 0:
+                valid_ids.append(img_id)
+        return valid_ids
     
     def _decode_segmentation(self, segmentation, height, width):
         """Decode COCO segmentation to binary mask."""
@@ -246,7 +270,7 @@ def train_maskrcnn(
     
     best_val_loss = float('inf')
     patience_counter = 0
-    patience = 10  # Default patience or passed as arg
+    patience = 3  # Default patience or passed as arg
     
     print(f"\n{'='*60}")
     print("Training Mask R-CNN for Billboard Segmentation")

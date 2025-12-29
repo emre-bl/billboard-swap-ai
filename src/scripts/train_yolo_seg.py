@@ -21,7 +21,7 @@ def train_yolo_seg(
     epochs: int = 50,
     batch_size: int = 16,
     imgsz: int = 640,
-    patience: int = 10,
+    patience: int = 5,
     workers: int = 4,
     device: str = None,
     resume: bool = False,
@@ -63,11 +63,30 @@ def train_yolo_seg(
         resume=resume,
         project=project,
         name=run_name,
-        # Augmentation
-        augment=True,
         # Save best model
         save=True,
         save_period=-1,  # Save only best
+        # ===== DATA AUGMENTATION =====
+        augment=True,
+        # HSV augmentation
+        hsv_h=0.015,  # Hue shift
+        hsv_s=0.7,    # Saturation shift  
+        hsv_v=0.4,    # Value/brightness shift
+        # Geometric transforms
+        degrees=15.0,     # Rotation (+/- deg)
+        translate=0.2,    # Translation (+/- fraction)
+        scale=0.5,        # Scale (+/- gain)
+        shear=5.0,        # Shear (+/- deg)
+        perspective=0.001, # Perspective warp
+        # Flip
+        flipud=0.0,       # Vertical flip (billboards rarely upside down)
+        fliplr=0.5,       # Horizontal flip
+        # Mosaic and MixUp
+        mosaic=1.0,       # Mosaic augmentation probability
+        mixup=0.15,       # MixUp augmentation probability
+        copy_paste=0.3,   # Copy-paste (higher for segmentation)
+        # Erasing
+        erasing=0.4,      # Random erasing probability
     )
     
     print(f"\n✓ Training complete!")

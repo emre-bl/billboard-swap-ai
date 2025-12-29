@@ -244,7 +244,7 @@ def run_benchmarks(
         try:
             if config["type"] == "yolo":
                 variant = config["variant"]
-                model_path = f"runs/segment/billboard_yolov8{variant}_seg/weights/best.pt"
+                model_path = f"models/yolov8{variant}_seg_best.pt"
                 
                 # Check if trained model exists
                 if not Path(model_path).exists():

@@ -10,15 +10,16 @@ VARIANTS = {
     "n": "yolov8n.pt",
     "s": "yolov8s.pt", 
     "m": "yolov8m.pt",
+    "l": "yolov8l.pt",
 }
 
 def train_yolo_det(
     variant: str = "n",
     data_yaml: str = "data_detection.yaml",
     epochs: int = 50,
-    batch_size: int = 16,
+    batch_size: int = 32,
     imgsz: int = 640,
-    patience: int = 15,
+    patience: int = 10,
     project: str = "runs/detect",
     name: str = None,
 ):
@@ -42,8 +43,28 @@ def train_yolo_det(
         patience=patience,
         project=project,
         name=run_name,
-        augment=True,
         save=True,
+        # ===== DATA AUGMENTATION =====
+        augment=True,
+        # HSV augmentation
+        hsv_h=0.015,  # Hue shift
+        hsv_s=0.7,    # Saturation shift
+        hsv_v=0.4,    # Value/brightness shift
+        # Geometric transforms
+        degrees=15.0,     # Rotation (+/- deg)
+        translate=0.2,    # Translation (+/- fraction)
+        scale=0.5,        # Scale (+/- gain)
+        shear=5.0,        # Shear (+/- deg)
+        perspective=0.001, # Perspective warp
+        # Flip
+        flipud=0.0,       # Vertical flip (billboards rarely upside down)
+        fliplr=0.5,       # Horizontal flip
+        # Mosaic and MixUp
+        mosaic=1.0,       # Mosaic augmentation probability
+        mixup=0.15,       # MixUp augmentation probability
+        copy_paste=0.1,   # Copy-paste augmentation
+        # Erasing
+        erasing=0.4,      # Random erasing probability
     )
     
     print(f"Training complete: {project}/{run_name}")
