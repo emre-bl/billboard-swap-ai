@@ -470,13 +470,13 @@ class AdaptiveOpticalFlowTracker(BaseTracker):
         
         # Extract features from mask region
         self.prev_points = self._extract_features(self.prev_gray, mask)
-        if self.prev_points is not None:
+        if self.prev_points is not None and len(self.prev_points) > 0:
             self.feature_history.append(len(self.prev_points))
         
         self.tracking_confidence = 1.0
         self.initialized = True
         
-        print(f"AdaptiveOpticalFlowTracker initialized with {len(self.prev_points) if self.prev_points else 0} features")
+        print(f"AdaptiveOpticalFlowTracker initialized with {len(self.prev_points) if self.prev_points is not None else 0} features")
     
     def track(self, frame: np.ndarray) -> Optional[np.ndarray]:
         if not self.initialized or self.prev_points is None:

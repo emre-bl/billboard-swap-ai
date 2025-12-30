@@ -290,13 +290,11 @@ def process_video_enhanced(args):
         def __init__(self, c):
             self.segmenter = "yolov8-seg" if c.seg_model_type == "yolo" else \
                             "mask-rcnn" if c.seg_model_type == "maskrcnn" else \
-                            "grounded-sam" if c.seg_model_type == "grounded-sam" else \
                             c.seg_model_type
             self.yolo_model_path = c.seg_path
             self.yolo_variant = "n"
             self.maskrcnn_model_path = c.seg_path
             self.sam2_model_path = c.seg_path if "sam2" in c.seg_path else "sam2_b.pt"
-            self.grounding_model_path = c.det_path
             self.text_prompt = c.prompt
     
     # Initialize components
@@ -482,12 +480,12 @@ def main():
     
     # Detection
     parser.add_argument("--det-model", default="yolo", 
-                       choices=["yolo", "grounding-dino", "none"])
+                       choices=["yolo", "none"])
     parser.add_argument("--det-path", default="yolov8n.pt")
     
     # Segmentation
     parser.add_argument("--seg-model", default="sam2", 
-                       choices=["sam2", "yolo", "maskrcnn", "grounded-sam"])
+                       choices=["sam2", "yolo", "maskrcnn"])
     parser.add_argument("--seg-path", default="sam2_b.pt")
     
     # Tracking

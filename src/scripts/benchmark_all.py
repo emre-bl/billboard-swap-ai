@@ -84,19 +84,20 @@ def benchmark_yolo_detection(variants, data_yaml):
     return results
 
 
-def benchmark_grounding_dino_detection(data_yaml):
-    """Zero-shot detection using YOLO-World."""
-    print("Benchmarking GroundingDINO (Zero-shot) detection...")
+def benchmark_yolo_world_detection(data_yaml):
+    """Zero-shot detection using YOLO-Worldv2."""
+    print("Benchmarking YOLO-Worldv2 (Zero-shot) detection...")
     n_images, n_instances = get_dataset_stats(data_yaml, "test")
     
     try:
-        model = YOLO("models/yolov8s-world.pt")
+        # Use YOLOv8m-worldv2 for zero-shot detection
+        model = YOLO("yolov8m-worldv2.pt")
         model.set_classes(["billboard"])
         metrics = model.val(data=data_yaml, split="test", verbose=False)
         p, r, map50, map95 = metrics.box.mean_results()
         
         return [{
-            "Model": "GroundingDINO(Zero-shot)",
+            "Model": "YOLO-Worldv2(Zero-shot)",
             "Stage": "Test",
             "Images": n_images,
             "Instances": n_instances,
@@ -107,7 +108,79 @@ def benchmark_grounding_dino_detection(data_yaml):
         }]
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
         return []
+
+
+def compute_detection_metrics(all_preds, all_gts, iou_thresholds=None):
+    """Compute P, R, AP50, AP50-95 for detection using box IoU."""
+    if iou_thresholds is None:
+        iou_thresholds = np.arange(0.5, 1.0, 0.05)
+    
+    def box_iou(box1, box2):
+        x1 = max(box1[0], box2[0])
+        y1 = max(box1[1], box2[1])
+        x2 = min(box1[2], box2[2])
+        y2 = min(box1[3], box2[3])
+        
+        inter = max(0, x2 - x1) * max(0, y2 - y1)
+        area1 = (box1[2] - box1[0]) * (box1[3] - box1[1])
+        area2 = (box2[2] - box2[0]) * (box2[3] - box2[1])
+        union = area1 + area2 - inter
+        
+        return inter / (union + 1e-6)
+    
+    aps = []
+    tp_50, fp_50, fn_50 = 0, 0, 0
+    
+    for iou_thresh in iou_thresholds:
+        tp, fp, fn = 0, 0, 0
+        
+        for preds, gts in zip(all_preds, all_gts):
+            if len(gts) == 0:
+                fp += len(preds)
+                continue
+            if len(preds) == 0:
+                fn += len(gts)
+                continue
+            
+            matched_gt = set()
+            
+            for pred in preds:
+                best_iou = 0
+                best_gt_idx = -1
+                
+                for gt_idx, gt in enumerate(gts):
+                    if gt_idx in matched_gt:
+                        continue
+                    iou = box_iou(pred, gt)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_gt_idx = gt_idx
+                
+                if best_iou >= iou_thresh:
+                    tp += 1
+                    matched_gt.add(best_gt_idx)
+                else:
+                    fp += 1
+            
+            fn += len(gts) - len(matched_gt)
+        
+        precision = tp / (tp + fp + 1e-6)
+        aps.append(precision)
+        
+        if abs(iou_thresh - 0.5) < 0.01:
+            tp_50, fp_50, fn_50 = tp, fp, fn
+    
+    p = tp_50 / (tp_50 + fp_50 + 1e-6)
+    r = tp_50 / (tp_50 + fn_50 + 1e-6)
+    ap50 = aps[0] if aps else 0
+    ap50_95 = np.mean(aps) if aps else 0
+    
+    return p, r, ap50, ap50_95
+
+
 
 
 def benchmark_yolo_segmentation(variants, data_yaml):
@@ -238,18 +311,48 @@ def benchmark_yolo_sam(det_model_path, data_yaml, sam_model="sam2_b.pt"):
         return []
 
 
-def benchmark_grounded_sam(data_yaml, sam_model="sam2_b.pt"):
-    """Benchmark GroundedSAM (zero-shot detection + SAM2)."""
-    print("Benchmarking GroundedSAM (Zero-shot)...")
+# --- MASK R-CNN UTILS ---
+def get_maskrcnn_model(num_classes: int = 2):
+    """Create Mask R-CNN model with custom head."""
+    from torchvision.models.detection import maskrcnn_resnet50_fpn
+    from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+    from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
     
+    # Load pretrained model
+    model = maskrcnn_resnet50_fpn(weights='DEFAULT')
+    
+    # Replace box predictor
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    
+    # Replace mask predictor
+    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+    hidden_layer = 256
+    model.roi_heads.mask_predictor = MaskRCNNPredictor(
+        in_features_mask, hidden_layer, num_classes
+    )
+    return model
+
+def benchmark_maskrcnn(data_yaml):
+    """Benchmark Mask R-CNN."""
+    print("Benchmarking Mask R-CNN...")
+    model_path = "maskrcnn_trained_models/best.pth"
+    if not os.path.exists(model_path):
+        print(f"Mask R-CNN model not found at {model_path}")
+        return []
+        
     try:
         n_images, n_instances = get_dataset_stats(data_yaml, "test")
         
-        # Load models - use multiple text prompts for better detection
-        detector = YOLO("models/yolov8s-world.pt")
-        detector.set_classes(["billboard", "advertising board", "sign", "advertisement"])
-        sam = SAM("models/sam2_b.pt")
+        # Load model
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = get_maskrcnn_model(2)
+        checkpoint = torch.load(model_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(device)
+        model.eval()
         
+        # Get test images
         with open(data_yaml, 'r') as f:
             data = yaml.safe_load(f)
         
@@ -260,6 +363,8 @@ def benchmark_grounded_sam(data_yaml, sam_model="sam2_b.pt"):
         all_predictions = []
         all_ground_truths = []
         
+        import torchvision.transforms as T
+        
         for p in test_paths:
             img_dir = p if os.path.isabs(p) else os.path.join(os.path.dirname(data_yaml), p)
             label_dir = img_dir.replace('/images', '/labels').replace('\\images', '\\labels')
@@ -269,15 +374,33 @@ def benchmark_grounded_sam(data_yaml, sam_model="sam2_b.pt"):
                 
             images = sorted([f for f in os.listdir(img_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg'))])
             
-            for img_name in tqdm(images, desc="GroundedSAM"):
+            for img_name in tqdm(images, desc="Mask R-CNN"):
                 img_path = os.path.join(img_dir, img_name)
-                frame = cv2.imread(img_path)
-                if frame is None:
-                    continue
+                # Load image for Mask R-CNN (Requires 0-1 Tensor)
+                from PIL import Image
+                img_pil = Image.open(img_path).convert("RGB")
+                w, h = img_pil.size
                 
-                h, w = frame.shape[:2]
+                # Transform
+                img_tensor = T.functional.to_tensor(img_pil).to(device)
                 
-                # Load ground truth
+                # Predict
+                with torch.no_grad():
+                    prediction = model([img_tensor])[0]
+                
+                # Extract masks > 0.5 conf
+                pred_masks = []
+                masks = prediction['masks'].squeeze(1).cpu().numpy()
+                scores = prediction['scores'].cpu().numpy()
+                
+                for i, score in enumerate(scores):
+                    if score > 0.5:
+                        mask = (masks[i] > 0.5).astype(np.uint8)
+                        pred_masks.append(mask)
+                
+                all_predictions.append(pred_masks)
+                
+                # Load ground truth for metric
                 lbl_path = os.path.join(label_dir, os.path.splitext(img_name)[0] + '.txt')
                 gt_masks = []
                 if os.path.exists(lbl_path):
@@ -293,28 +416,12 @@ def benchmark_grounded_sam(data_yaml, sam_model="sam2_b.pt"):
                                 cv2.fillPoly(mask, [pts.astype(np.int32)], 1)
                                 gt_masks.append(mask)
                 
-                # Detect with zero-shot - lower confidence for better recall
-                results = detector.predict(frame, conf=0.1, verbose=False)
-                pred_masks = []
-                
-                if results and results[0].boxes is not None:
-                    boxes = results[0].boxes.xyxy.cpu().numpy()
-                    
-                    for box in boxes:
-                        sam_results = sam.predict(frame, bboxes=[box.tolist()], verbose=False)
-                        if sam_results and sam_results[0].masks is not None and len(sam_results[0].masks.data) > 0:
-                            mask = sam_results[0].masks.data[0].cpu().numpy()
-                            if mask.shape != (h, w):
-                                mask = cv2.resize(mask.astype(np.float32), (w, h))
-                            pred_masks.append((mask > 0.5).astype(np.uint8))
-                
-                all_predictions.append(pred_masks)
                 all_ground_truths.append(gt_masks)
         
         p, r, ap50, ap50_95 = compute_segmentation_metrics(all_predictions, all_ground_truths)
         
         return [{
-            "Model": "GroundedSAM(Zero-shot)",
+            "Model": "Mask R-CNN",
             "Stage": "Test",
             "Images": n_images,
             "Instances": n_instances,
@@ -325,7 +432,7 @@ def benchmark_grounded_sam(data_yaml, sam_model="sam2_b.pt"):
         }]
         
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in Mask R-CNN benchmark: {e}")
         import traceback
         traceback.print_exc()
         return []
@@ -424,7 +531,7 @@ def main():
     print("="*60 + "\n")
     
     detection_results.extend(benchmark_yolo_detection(["n", "s", "m"], args.detection_yaml))
-    detection_results.extend(benchmark_grounding_dino_detection(args.detection_yaml))
+    detection_results.extend(benchmark_yolo_world_detection(args.detection_yaml))
     
     # Segmentation Benchmarks
     print("\n" + "="*60)
@@ -438,8 +545,8 @@ def main():
     if os.path.exists(det_model):
         segmentation_results.extend(benchmark_yolo_sam(det_model, args.segmentation_yaml))
     
-    # GroundedSAM
-    segmentation_results.extend(benchmark_grounded_sam(args.segmentation_yaml))
+    # Mask R-CNN
+    segmentation_results.extend(benchmark_maskrcnn(args.segmentation_yaml))
     
     # Create output
     output = ["# Benchmark Results\n"]

@@ -3,11 +3,12 @@ Detection Module for Billboard Object Detection.
 
 Supports:
 - YOLOv8 (n, s, m, l, x variants)
-- GroundingDINO (Zero-shot via Ultralytics YOLO World)
+- GroundingDINO (Zero-shot text-conditioned detection)
 """
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple, Literal
+import torch
 
 class BaseDetector(ABC):
     @abstractmethod
@@ -51,12 +52,16 @@ class YOLODetector(BaseDetector):
             boxes = results[0].boxes.xyxy.cpu().numpy().tolist()
         return boxes
 
-class GroundingDINODetector(BaseDetector):
-    """Uses YOLO-World as a proxy for Zero-Shot detection (GroundingDINO equivalent in Ultralytics)."""
+
+class YOLOWorldDetector(BaseDetector):
+    """YOLO-World for zero-shot detection (alternative to GroundingDINO)."""
+    
     def __init__(self, model_path: str = "yolov8s-world.pt", prompt: str = "billboard"):
         from ultralytics import YOLO
         self.model = YOLO(model_path)
         self.model.set_classes([prompt])
+        self.prompt = prompt
+        print(f"[YOLO-World] Initialized with prompt: '{prompt}'")
     
     def detect(self, frame: np.ndarray, conf: float = 0.3) -> List[List[float]]:
         results = self.model.predict(frame, conf=conf, verbose=False)
@@ -65,12 +70,24 @@ class GroundingDINODetector(BaseDetector):
             boxes = results[0].boxes.xyxy.cpu().numpy().tolist()
         return boxes
 
+
 def create_detector(model_type: str, model_path: str = None, prompt: str = "billboard") -> BaseDetector:
+    """
+    Factory function to create a detector.
+    
+    Args:
+        model_type: "yolo" or "yolo-world"
+        model_path: Path to model weights
+        prompt: Text prompt for zero-shot detectors
+        
+    Returns:
+        BaseDetector instance
+    """
     if model_type == "yolo":
         path = model_path if model_path else "yolov8n.pt"
         return YOLODetector(path)
-    elif model_type == "grounding-dino":
+    elif model_type == "yolo-world":
         path = model_path if model_path else "yolov8s-world.pt"
-        return GroundingDINODetector(path, prompt)
+        return YOLOWorldDetector(path, prompt)
     else:
-        raise ValueError(f"Unknown detector type: {model_type}")
+        raise ValueError(f"Unknown detector type: {model_type}. Available: yolo, yolo-world")

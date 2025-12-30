@@ -7,7 +7,6 @@ Modes:
 - maskrcnn: Mask R-CNN (End-to-End)
 - yolo_sam: YOLO Detection + SAM2 Segmentation (Box Prompt)
 - yolo_seg: YOLO Segmentation (End-to-End)
-- grounded_sam: GroundingDINO + SAM2 (Zero-Shot)
 """
 
 import sys
@@ -21,9 +20,9 @@ import torch
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 
-from modules.detection import create_detector, YOLODetector, GroundingDINODetector
-from modules.segmentation import create_segmenter, MaskRCNNSegmenter, YOLOSegmenter, SAM2Segmenter, GroundedSAMSegmenter
-from modules.replacement import apply_warp, CornerSmoother
+from modules.detection import create_detector, YOLODetector
+from modules.segmentation import create_segmenter, MaskRCNNSegmenter, YOLOSegmenter, SAM2Segmenter
+from modules.replacement import apply_warp, CornerSmoother, ReplacementConfig
 
 def get_best_box(boxes, method="area"):
     if not boxes:
@@ -47,7 +46,6 @@ def process_video_mode(video_path, replacement_path, output_path, mode, config):
     yolo_seg_path = "models/yolov8m_seg2_best.pt"
     maskrcnn_path = "maskrcnn_trained_models/best.pth"
     sam2_path = "models/sam2_b.pt"
-    grounding_path = "models/yolov8s-world.pt"
     
     try:
         if mode == "maskrcnn":
@@ -72,14 +70,6 @@ def process_video_mode(video_path, replacement_path, output_path, mode, config):
             else:
                 segmenter = YOLOSegmenter(model_path=yolo_seg_path)
                 
-        elif mode == "grounded_sam":
-            print("Loading Grounded SAM (Zero-Shot)...")
-            segmenter = GroundedSAMSegmenter(
-                sam_model_path=sam2_path,
-                grounding_model_path=grounding_path,
-                text_prompt="billboard"
-            )
-            
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -113,6 +103,13 @@ def process_video_mode(video_path, replacement_path, output_path, mode, config):
     # Smoother (Visual smoothing only, no tracking logic)
     smoother = CornerSmoother(alpha=0.6)
     
+    rep_config = ReplacementConfig(
+        edge_blend_enabled=True,
+        color_match_enabled=False,  # Disable to prevent green tint from billboard
+        smoothing_enabled=True,
+        sharpen_replacement=True
+    )
+    
     frame_idx = 0
     
     while True:
@@ -140,11 +137,6 @@ def process_video_mode(video_path, replacement_path, output_path, mode, config):
             best_box = get_best_box(boxes)
             if best_box:
                 mask = segmenter.segment_with_box(frame, best_box)
-                
-        elif mode == "grounded_sam":
-            # Zero-shot End-to-end (internal detect->segment)
-            masks = segmenter.segment(frame, conf=0.3)
-            mask = segmenter.select_best(masks, method="area")
             
         # --- REPLACEMENT ---
         result_frame = frame
@@ -154,7 +146,7 @@ def process_video_mode(video_path, replacement_path, output_path, mode, config):
                  mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
                  
              try:
-                 result_frame = apply_warp(frame, mask, rep_img, smoother=smoother)
+                 result_frame = apply_warp(frame, mask, rep_img, smoother=smoother, config=rep_config)
              except Exception as e:
                  pass # Skip bad warps
 
@@ -178,13 +170,13 @@ def main():
     parser.add_argument("--video", required=True, help="Input video path")
     parser.add_argument("--replacement", required=True, help="Replacement image path")
     parser.add_argument("--output-dir", default="outputs_comprehensive", help="Output directory")
-    parser.add_argument("--mode", default="all", choices=["all", "maskrcnn", "yolo_sam", "yolo_seg", "grounded_sam"])
+    parser.add_argument("--mode", default="all", choices=["all", "maskrcnn", "yolo_sam", "yolo_seg"])
     
     args = parser.parse_args()
     
     modes = []
     if args.mode == "all":
-        modes = ["maskrcnn", "yolo_sam", "yolo_seg", "grounded_sam"]
+        modes = ["maskrcnn", "yolo_sam", "yolo_seg"]
     else:
         modes = [args.mode]
         

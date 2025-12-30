@@ -12,7 +12,6 @@ from .segmentation import (
     BaseSegmenter,
     YOLOSegmenter,
     MaskRCNNSegmenter,
-    GroundedSAMSegmenter,
     SAM2Segmenter,
     create_segmenter,
 )
@@ -58,7 +57,6 @@ __all__ = [
     "BaseSegmenter",
     "YOLOSegmenter", 
     "MaskRCNNSegmenter",
-    "GroundedSAMSegmenter",
     "SAM2Segmenter",
     "create_segmenter",
     # Tracking

@@ -4,7 +4,6 @@ Unified Segmentation Module for Billboard Detection.
 Supports:
 - YOLOv8-seg (n, s, m, l, x variants) - Fine-tuned
 - Mask R-CNN (ResNet50-FPN) - Fine-tuned  
-- GroundedSAM (GroundingDINO + SAM2) - Zero-shot
 - SAM2 - Zero-shot with auto-prompting
 """
 import numpy as np
@@ -199,93 +198,38 @@ class MaskRCNNSegmenter(BaseSegmenter):
         return masks[best_idx]
 
 
-class GroundedSAMSegmenter(BaseSegmenter):
-    """GroundedSAM: GroundingDINO + SAM2 for zero-shot segmentation."""
-    
-    def __init__(
-        self, 
-        sam_model_path: str = "sam2_b.pt",
-        grounding_model_path: str = "yolov8s-world.pt",
-        text_prompt: str = "billboard"
-    ):
-        from ultralytics import YOLO, SAM
-        
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.grounding_model = YOLO(grounding_model_path).to(self.device)
-        self.sam_model = SAM(sam_model_path).to(self.device)
-        self.text_prompt = text_prompt
-        print(f"GroundedSAM Segmenter initialized on {self.device}")
-    
-    def segment(self, frame: np.ndarray, conf: float = 0.55) -> List[np.ndarray]:
-        # Set classes for zero-shot detection
-        self.grounding_model.set_classes([self.text_prompt])
-        
-        # Detect bounding boxes
-        results = self.grounding_model.predict(frame, conf=conf, device=self.device, verbose=False)
-        
-        if not results or not results[0].boxes:
-            return []
-        
-        bboxes = results[0].boxes.xyxy.cpu().numpy().tolist()
-        
-        if not bboxes:
-            return []
-        
-        # Segment using SAM with box prompts
-        sam_results = self.sam_model.predict(frame, bboxes=bboxes, device=self.device, verbose=False)
-        
-        masks = []
-        if sam_results and sam_results[0].masks is not None:
-            mask_data = sam_results[0].masks.data.cpu().numpy()
-            for mask in mask_data:
-                if mask.shape != frame.shape[:2]:
-                    mask = cv2.resize(mask.astype(np.float32), (frame.shape[1], frame.shape[0]))
-                binary_mask = (mask > 0.5).astype(np.uint8) * 255
-                masks.append(binary_mask)
-        
-        return masks
-
 
 class SAM2Segmenter(BaseSegmenter):
-    """SAM2 zero-shot segmentation with automatic point prompting."""
+    """SAM2 segmentation model."""
     
     def __init__(self, model_path: str = "sam2_b.pt"):
         from ultralytics import SAM
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = SAM(model_path).to(self.device)
-        print(f"SAM2 Segmenter initialized on {self.device}")
-    
-    def segment(self, frame: np.ndarray, conf: float = 0.55) -> List[np.ndarray]:
-        # Auto-segmentation (segment everything)
-        results = self.model.predict(frame, device=self.device, verbose=False)
+        self.model = SAM(model_path)
         
+    def segment(self, frame: np.ndarray, conf: float = 0.55) -> List[np.ndarray]:
+        results = self.model(frame, verbose=False)
         masks = []
         if results and results[0].masks is not None:
             mask_data = results[0].masks.data.cpu().numpy()
-            
             for mask in mask_data:
                 if mask.shape != frame.shape[:2]:
-                    mask = cv2.resize(mask.astype(np.float32), (frame.shape[1], frame.shape[0]))
+                    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
                 binary_mask = (mask > 0.5).astype(np.uint8) * 255
-                
-                # Filter small masks (likely not billboards)
-                if np.sum(binary_mask > 0) > 1000:  # Min area threshold
-                    masks.append(binary_mask)
-        
+                masks.append(binary_mask)
         return masks
-    
-    def segment_with_box(self, frame: np.ndarray, bbox: List[float]) -> Optional[np.ndarray]:
-        """Segment using a bounding box prompt."""
-        results = self.model.predict(frame, bboxes=[bbox], device=self.device, verbose=False)
-        
-        if results and results[0].masks is not None:
-            mask = results[0].masks.data[0].cpu().numpy()
-            if mask.shape != frame.shape[:2]:
-                mask = cv2.resize(mask.astype(np.float32), (frame.shape[1], frame.shape[0]))
-            return (mask > 0.5).astype(np.uint8) * 255
-        
-        return None
 
+    def segment_with_box(self, frame: np.ndarray, box: List[int]) -> Optional[np.ndarray]:
+        """Segment with bounding box prompt."""
+        # box: [x1, y1, x2, y2]
+        results = self.model(frame, bboxes=[box], verbose=False)
+        if results and results[0].masks is not None:
+             mask_data = results[0].masks.data.cpu().numpy()
+             if len(mask_data) > 0:
+                 mask = mask_data[0]
+                 if mask.shape != frame.shape[:2]:
+                    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
+                 return (mask > 0.5).astype(np.uint8) * 255
+        return None
 
 def create_segmenter(config) -> BaseSegmenter:
     """
@@ -305,11 +249,6 @@ def create_segmenter(config) -> BaseSegmenter:
     elif config.segmenter == "mask-rcnn":
         return MaskRCNNSegmenter(
             model_path=config.maskrcnn_model_path or "maskrcnn_trained_models/best.pth"
-        )
-    elif config.segmenter == "grounded-sam":
-        return GroundedSAMSegmenter(
-            sam_model_path=config.sam2_model_path,
-            grounding_model_path=config.grounding_model_path
         )
     elif config.segmenter == "sam2":
         return SAM2Segmenter(model_path=config.sam2_model_path)
