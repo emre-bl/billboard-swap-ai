@@ -71,123 +71,7 @@ class TrackingResult:
     timestamp: float
 
 
-class FusionTracker(BaseTracker):
-    """
-    Multi-tracker fusion for robust tracking.
-    Combines results from multiple trackers using weighted voting.
-    """
-    
-    def __init__(self, trackers: List[Tuple[str, BaseTracker]], 
-                 weights: Optional[List[float]] = None):
-        self.trackers = trackers
-        self.weights = weights if weights else [1.0] * len(trackers)
-        self.results_history = deque(maxlen=10)
-        self.frame_shape = None
-        self.initialized = False
-        
-    def init(self, frame: np.ndarray, mask: np.ndarray):
-        self.frame_shape = frame.shape[:2]
-        for _, tracker in self.trackers:
-            tracker.init(frame, mask)
-        self.initialized = True
-        
-    def track(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        if not self.initialized:
-            return None
-            
-        results = []
-        valid_trackers = []
-        
-        # Get results from all trackers
-        for tracker_id, tracker in self.trackers:
-            try:
-                mask = tracker.track(frame)
-                if mask is not None:
-                    confidence = tracker.get_confidence() if hasattr(tracker, 'get_confidence') else 0.7
-                    results.append((mask, confidence, tracker_id))
-                    valid_trackers.append((tracker, confidence))
-            except Exception as e:
-                print(f"[Fusion] Tracker {tracker_id} failed: {e}")
-                continue
-        
-        if not results:
-            return None
-            
-        # Weighted fusion
-        fused_mask = self._fuse_masks(results)
-        
-        # Update tracker weights based on consistency
-        self._update_weights(valid_trackers, fused_mask)
-        
-        return fused_mask
-    
-    def _fuse_masks(self, results: List[Tuple[np.ndarray, float, str]]) -> np.ndarray:
-        """Fuse multiple masks using weighted voting."""
-        h, w = self.frame_shape
-        fused = np.zeros((h, w), dtype=np.float32)
-        total_weight = 0.0
-        
-        for mask, confidence, _ in results:
-            mask_float = mask.astype(np.float32) / 255.0
-            fused += mask_float * confidence
-            total_weight += confidence
-        
-        if total_weight > 0:
-            fused = fused / total_weight
-        
-        # Threshold and convert to uint8
-        fused_mask = (fused > 0.5).astype(np.uint8) * 255
-        
-        # Keep only largest connected component
-        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(fused_mask, connectivity=8)
-        if num_labels > 1:
-            largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-            fused_mask = np.uint8(labels == largest_label) * 255
-        
-        return fused_mask
-    
-    def _update_weights(self, trackers: List[Tuple[BaseTracker, float]], 
-                       fused_mask: np.ndarray):
-        """Update tracker weights based on agreement with fused result."""
-        # Simple implementation: increase weight for agreeing trackers
-        for tracker, old_weight in trackers:
-            if hasattr(tracker, 'get_confidence'):
-                mask = getattr(tracker, 'last_mask', None)
-                if mask is not None:
-                    # Compute agreement with fused mask
-                    agreement = self._compute_mask_iou(mask, fused_mask)
-                    # Update weight (slow adaptation)
-                    new_weight = old_weight * 0.9 + agreement * 0.1
-                    # Update tracker confidence if possible
-                    if hasattr(tracker, 'tracking_confidence'):
-                        tracker.tracking_confidence = min(1.0, tracker.tracking_confidence + 0.05)
-    
-    def _compute_mask_iou(self, mask1: np.ndarray, mask2: np.ndarray) -> float:
-        """Compute IoU between two masks."""
-        mask1_bin = (mask1 > 127).astype(np.uint8)
-        mask2_bin = (mask2 > 127).astype(np.uint8)
-        
-        intersection = np.logical_and(mask1_bin, mask2_bin).sum()
-        union = np.logical_or(mask1_bin, mask2_bin).sum()
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def get_confidence(self) -> float:
-        """Get overall fusion confidence."""
-        if not self.trackers:
-            return 0.0
-        
-        confidences = []
-        for _, tracker in self.trackers:
-            if hasattr(tracker, 'get_confidence'):
-                confidences.append(tracker.get_confidence())
-        
-        return np.mean(confidences) if confidences else 0.5
-    
-    def reset(self):
-        for _, tracker in self.trackers:
-            tracker.reset()
-        self.initialized = False
+
 
 
 class SAM2Tracker(BaseTracker):
@@ -195,7 +79,7 @@ class SAM2Tracker(BaseTracker):
     SAM2 tracker with improved prompting and error recovery.
     """
     
-    def __init__(self, model_path: str = "sam2_b.pt", use_mask_prompt: bool = True):
+    def __init__(self, model_path: str = "models/sam2_b.pt", use_mask_prompt: bool = True):
         try:
             from ultralytics import SAM
         except ImportError:
@@ -434,9 +318,9 @@ class SAM2Tracker(BaseTracker):
         self.initialized = False
 
 
-class AdaptiveOpticalFlowTracker(BaseTracker):
+class OpticalFlowTracker(BaseTracker):
     """
-    Adaptive Optical Flow tracker with pyramid levels and error recovery.
+     Optical Flow tracker with pyramid levels and error recovery.
     """
     
     def __init__(self, 
@@ -476,7 +360,7 @@ class AdaptiveOpticalFlowTracker(BaseTracker):
         self.tracking_confidence = 1.0
         self.initialized = True
         
-        print(f"AdaptiveOpticalFlowTracker initialized with {len(self.prev_points) if self.prev_points is not None else 0} features")
+        print(f"OpticalFlowTracker initialized with {len(self.prev_points) if self.prev_points is not None else 0} features")
     
     def track(self, frame: np.ndarray) -> Optional[np.ndarray]:
         if not self.initialized or self.prev_points is None:
@@ -569,7 +453,7 @@ class AdaptiveOpticalFlowTracker(BaseTracker):
         """Extract good features to track within mask."""
         mask_u8 = (mask > 127).astype(np.uint8)
         
-        # Adaptive number of features based on mask size
+        #  number of features based on mask size
         mask_area = np.sum(mask_u8)
         max_features = max(self.min_features, int(mask_area / 100))
         
@@ -629,7 +513,7 @@ class AdaptiveOpticalFlowTracker(BaseTracker):
 
 
 # Alias for backward compatibility
-OpticalFlowTracker = AdaptiveOpticalFlowTracker
+OpticalFlowTracker = OpticalFlowTracker
 
 
 
@@ -656,7 +540,7 @@ class PlanarKalmanTracker(BaseTracker):
             criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
         )
         
-        # Adaptive noise settings
+        #  noise settings
         self.adaptive_noise = adaptive_noise
         self.outlier_threshold = outlier_threshold
         self.tracking_quality = 1.0
@@ -1223,181 +1107,7 @@ class ECCHomographyTracker(BaseTracker):
         self.frame_count = 0
 
 
-class SAM2MemoryTracker(BaseTracker):
-    """
-    SAM2 with Memory Bank and Distractor-Aware Memory (SAM2++).
-    """
-    
-    def __init__(self, model_path: str = "sam2_b.pt", memory_size: int = 5):
-        from ultralytics import SAM
-        from collections import deque
-        
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = SAM(model_path).to(self.device)
-        self.memory_size = memory_size
-        
-        # Memory bank (stores frame, mask, embedding tuples)
-        self.memory_bank = deque(maxlen=memory_size)
-        
-        # Reference (first high-quality detection)
-        self.reference_frame = None
-        self.reference_mask = None
-        self.reference_embedding = None
-        self.reference_bbox = None
-        
-        # Current state
-        self.prev_frame = None
-        self.prev_mask = None
-        self.prev_bbox = None
-        
-        # Motion history for linear prediction
-        self.motion_history = deque(maxlen=5)
-        
-        self.initialized = False
-        self.occlusion_count = 0
-        print(f"SAM2 Memory Tracker initialized on {self.device}")
-    
-    def _compute_embedding(self, frame: np.ndarray, mask: np.ndarray) -> np.ndarray:
-        """Compute color histogram embedding for masked region."""
-        mask_u8 = (mask > 127).astype(np.uint8)
-        if mask_u8.sum() == 0:
-            return np.zeros(512)
-        
-        masked_region = cv2.bitwise_and(frame, frame, mask=mask_u8)
-        hist = cv2.calcHist([masked_region], [0, 1, 2], mask_u8, [8, 8, 8], [0, 256, 0, 256, 0, 256])
-        hist = hist.flatten()
-        return hist / (hist.sum() + 1e-6)
-    
-    def _is_distractor(self, embedding: np.ndarray, threshold: float = 0.5) -> bool:
-        """Check if current embedding differs significantly from reference."""
-        if self.reference_embedding is None:
-            return False
-        
-        # Histogram intersection
-        similarity = np.minimum(embedding, self.reference_embedding).sum()
-        return similarity < threshold
-    
-    def _get_bbox_from_mask(self, mask: np.ndarray) -> Optional[list]:
-        """Extract bounding box from mask."""
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
-            return None
-        
-        cnt = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(cnt)
-        pad = 20
-        x = max(0, x - pad)
-        y = max(0, y - pad)
-        w = min(mask.shape[1] - x, w + 2 * pad)
-        h = min(mask.shape[0] - y, h + 2 * pad)
-        return [x, y, x + w, y + h]
-    
-    def _linear_predict_bbox(self) -> Optional[list]:
-        """Predict bbox based on motion history."""
-        if len(self.motion_history) < 2:
-            return self.prev_bbox
-        
-        # Compute average motion
-        bboxes = list(self.motion_history)
-        motion = np.array(bboxes[-1]) - np.array(bboxes[-2])
-        
-        if self.prev_bbox is None:
-            return None
-        
-        predicted = np.array(self.prev_bbox) + motion
-        return predicted.tolist()
-    
-    def init(self, frame: np.ndarray, mask: np.ndarray):
-        self.reference_frame = frame.copy()
-        self.reference_mask = mask.copy()
-        self.reference_embedding = self._compute_embedding(frame, mask)
-        self.reference_bbox = self._get_bbox_from_mask(mask)
-        
-        self.prev_frame = frame.copy()
-        self.prev_mask = mask.copy()
-        self.prev_bbox = self.reference_bbox
-        
-        if self.prev_bbox:
-            self.motion_history.append(self.prev_bbox)
-        
-        self.memory_bank.clear()
-        self.memory_bank.append((frame.copy(), mask.copy(), self.reference_embedding.copy()))
-        
-        self.initialized = True
-        self.occlusion_count = 0
-    
-    def track(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        if not self.initialized or self.prev_mask is None:
-            return None
-        
-        # Get bbox for prompting
-        bbox = self._get_bbox_from_mask(self.prev_mask)
-        if bbox is None:
-            bbox = self._linear_predict_bbox()
-        
-        if bbox is None:
-            return None
-        
-        # Use SAM2 with bbox prompt
-        results = self.model.predict(frame, bboxes=[bbox], device=self.device, verbose=False)
-        
-        if results and results[0].masks is not None:
-            mask = results[0].masks.data[0].cpu().numpy()
-            if mask.shape != frame.shape[:2]:
-                mask = cv2.resize(mask.astype(np.float32), (frame.shape[1], frame.shape[0]))
-            tracked_mask = (mask > 0.5).astype(np.uint8) * 255
-            
-            # Compute embedding
-            embedding = self._compute_embedding(frame, tracked_mask)
-            
-            # Check for distractor
-            if self._is_distractor(embedding):
-                self.occlusion_count += 1
-                if self.occlusion_count > 3:
-                    # Use linear prediction fallback
-                    predicted_bbox = self._linear_predict_bbox()
-                    if predicted_bbox:
-                        # Try with predicted bbox
-                        results = self.model.predict(frame, bboxes=[predicted_bbox], 
-                                                    device=self.device, verbose=False)
-                        if results and results[0].masks is not None:
-                            mask = results[0].masks.data[0].cpu().numpy()
-                            if mask.shape != frame.shape[:2]:
-                                mask = cv2.resize(mask.astype(np.float32), 
-                                                 (frame.shape[1], frame.shape[0]))
-                            tracked_mask = (mask > 0.5).astype(np.uint8) * 255
-                            embedding = self._compute_embedding(frame, tracked_mask)
-            else:
-                self.occlusion_count = 0
-            
-            # Update memory bank
-            self.memory_bank.append((frame.copy(), tracked_mask.copy(), embedding.copy()))
-            
-            # Update motion history
-            new_bbox = self._get_bbox_from_mask(tracked_mask)
-            if new_bbox:
-                self.motion_history.append(new_bbox)
-            
-            self.prev_frame = frame.copy()
-            self.prev_mask = tracked_mask
-            self.prev_bbox = new_bbox
-            
-            return tracked_mask
-        
-        return None
-    
-    def reset(self):
-        self.memory_bank.clear()
-        self.motion_history.clear()
-        self.reference_frame = None
-        self.reference_mask = None
-        self.reference_embedding = None
-        self.reference_bbox = None
-        self.prev_frame = None
-        self.prev_mask = None
-        self.prev_bbox = None
-        self.initialized = False
-        self.occlusion_count = 0
+
 
 
 class HybridFlowTracker(BaseTracker):
@@ -1553,103 +1263,7 @@ class HybridFlowTracker(BaseTracker):
         self.frame_count = 0
 
 
-class ByteTracker(BaseTracker):
-    """
-    ByteTrack using Ultralytics (YOLO/RT-DETR).
-    """
-    
-    def __init__(self, model_path="yolov8m.pt"):
-        from ultralytics import YOLO, RTDETR
-        if "rtdetr" in model_path.lower():
-             self.model = RTDETR(model_path)
-        else:
-             self.model = YOLO(model_path)
-             
-        self.target_id = None
-        self.initialized = False
-        self.roi_mask = None
-        
-    def init(self, frame: np.ndarray, mask: np.ndarray):
-        # Run tracking on first frame to get IDs
-        results = self.model.track(frame, persist=True, verbose=False)
-        
-        if not results or not results[0].boxes or results[0].boxes.id is None:
-            print("ByteTracker: No objects detected in init frame.")
-            return
 
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        ids = results[0].boxes.id.cpu().numpy()
-        
-        # simple IoU to match mask
-        ys, xs = np.where(mask > 127)
-        if len(xs) == 0: return
-        
-        mask_box = [np.min(xs), np.min(ys), np.max(xs), np.max(ys)]
-        
-        best_iou = 0
-        best_id = -1
-        
-        for box, track_id in zip(boxes, ids):
-            # Compute IoU
-            xA = max(mask_box[0], box[0])
-            yA = max(mask_box[1], box[1])
-            xB = min(mask_box[2], box[2])
-            yB = min(mask_box[3], box[3])
-            
-            interArea = max(0, xB - xA) * max(0, yB - yA)
-            boxArea = (box[2] - box[0]) * (box[3] - box[1])
-            maskArea = (mask_box[2] - mask_box[0]) * (mask_box[3] - mask_box[1])
-            
-            iou = interArea / float(boxArea + maskArea - interArea)
-            
-            if iou > best_iou:
-                best_iou = iou
-                best_id = track_id
-                
-        if best_iou > 0.1:
-            self.target_id = best_id
-            self.initialized = True
-            print(f"ByteTracker initialized. Tracking ID: {self.target_id}")
-            self.roi_mask = mask.copy()
-        else:
-            print("ByteTracker: Could not match mask to any track ID.")
-
-    def track(self, frame: np.ndarray) -> Optional[np.ndarray]:
-        if not self.initialized or self.target_id is None:
-            return None
-            
-        results = self.model.track(frame, persist=True, verbose=False)
-        
-        if not results or not results[0].boxes or results[0].boxes.id is None:
-            return None
-            
-        boxes = results[0].boxes.xyxy.cpu().numpy()
-        ids = results[0].boxes.id.cpu().numpy()
-        
-        target_box = None
-        for box, track_id in zip(boxes, ids):
-            if track_id == self.target_id:
-                target_box = box
-                break
-                
-        if target_box is None:
-            return None
-            
-        # Return rectangular mask for the box
-        x1, y1, x2, y2 = target_box.astype(int)
-        
-        mask = np.zeros(frame.shape[:2], dtype=np.uint8)
-        # Clip
-        x1 = max(0, x1); y1 = max(0, y1)
-        x2 = min(frame.shape[1], x2); y2 = min(frame.shape[0], y2)
-        
-        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
-        
-        return mask
-
-    def reset(self):
-        self.target_id = None
-        self.initialized = False
 
 
 # =============================================================================
@@ -1672,13 +1286,8 @@ def create_tracker(config) -> BaseTracker:
     if tracker_type == "sam2":
         return SAM2Tracker(model_path=config.sam2_model_path)
     elif tracker_type == "optical-flow":
-        return AdaptiveOpticalFlowTracker(pyramid_levels=3)
-    elif tracker_type == "bytetrack":
-        # Prefer segmentation model for masks, otherwise fallback to detection
-        model_path = "models/yolov8m_seg_best.pt"
-        if not os.path.exists(model_path):
-            model_path = config.det_path if (config.det_path and config.det_path.endswith('.pt')) else "yolov8m-seg.pt"
-        return ByteTracker(model_path=model_path)
+        return OpticalFlowTracker(pyramid_levels=3)
+
     elif tracker_type == "feature-homography":
         return FeatureHomographyTracker(feature_type="sift")
     elif tracker_type == "kalman":
@@ -1689,44 +1298,9 @@ def create_tracker(config) -> BaseTracker:
         return ECCHomographyTracker(feature_type="sift")
     elif tracker_type == "planar-kalman":
         return PlanarKalmanTracker()
-    elif tracker_type == "sam2-memory":
-        return SAM2MemoryTracker(model_path=config.sam2_model_path)
+
     elif tracker_type == "hybrid-flow":
         return HybridFlowTracker()
     
     else:
         raise ValueError(f"Unknown tracker: {tracker_type}")
-
-
-def create_fusion_tracker(config) -> FusionTracker:
-    """
-    Create a fusion tracker combining multiple tracking strategies.
-    
-    Args:
-        config: PipelineConfig instance
-        
-    Returns:
-        FusionTracker instance
-    """
-    # Define trackers to fuse
-    trackers = []
-    
-    # Always include SAM2 for accuracy
-    trackers.append(("sam2", SAM2Tracker(model_path=config.sam2_model_path)))
-    
-    # Add optical flow for smoothness
-    trackers.append(("optical-flow", AdaptiveOpticalFlowTracker(pyramid_levels=3)))
-    
-    # Add feature-based tracker for robustness
-    trackers.append(("feature-homography", FeatureHomographyTracker(feature_type="sift")))
-    
-    # Weights: SAM2 highest, others moderate
-    weights = [0.5, 0.3, 0.2]
-    
-    return FusionTracker(trackers, weights)
-
-
-# Backward compatibility aliases
-OpticalFlowTracker = AdaptiveOpticalFlowTracker
-PlanarKalman = PlanarKalmanTracker
-SAM2TrackerMemory = SAM2MemoryTracker

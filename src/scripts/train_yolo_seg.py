@@ -1,7 +1,7 @@
 """
 YOLOv8-seg Training Script for Billboard Segmentation.
 
-Supports training all YOLO variants: n, s, m, l, x
+Supports training all YOLO variants: n, s, m
 """
 import argparse
 from pathlib import Path

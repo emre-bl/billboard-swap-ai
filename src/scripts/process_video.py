@@ -16,7 +16,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 
 from modules.detection import create_detector
 from modules.segmentation import create_segmenter, SAM2Segmenter
-from modules.tracking import create_tracker, create_fusion_tracker
+from modules.tracking import create_tracker
 from modules.replacement import apply_warp, CornerSmoother
 
 class PipelineConfig:
@@ -28,7 +28,7 @@ class PipelineConfig:
         self.tracker_type = args.tracker
         self.confidence = args.conf
         self.prompt = args.prompt
-        self.fusion = args.fusion
+
         
         # Mapping for factory compatibility
         self.tracker = args.tracker 
@@ -294,7 +294,7 @@ def process_video_enhanced(args):
             self.yolo_model_path = c.seg_path
             self.yolo_variant = "n"
             self.maskrcnn_model_path = c.seg_path
-            self.sam2_model_path = c.seg_path if "sam2" in c.seg_path else "sam2_b.pt"
+            self.sam2_model_path = c.seg_path if "sam2" in c.seg_path else "models/sam2_b.pt"
             self.text_prompt = c.prompt
     
     # Initialize components
@@ -303,15 +303,12 @@ def process_video_enhanced(args):
     segmenter = create_segmenter(seg_config)
     is_promptable = hasattr(segmenter, 'segment_with_box')
     
-    # Create tracker with optional fusion
-    if config.fusion:
-        tracker = create_fusion_tracker(config)
+    # Create tracker
+    base_tracker = create_tracker(config)
+    if config.adaptive_tracking:
+        tracker = AdaptiveTracker(config, base_tracker)
     else:
-        base_tracker = create_tracker(config)
-        if config.adaptive_tracking:
-            tracker = AdaptiveTracker(config, base_tracker)
-        else:
-            tracker = base_tracker
+        tracker = base_tracker
     
     replacement_img = cv2.imread(args.replacement)
     
@@ -486,15 +483,14 @@ def main():
     # Segmentation
     parser.add_argument("--seg-model", default="sam2", 
                        choices=["sam2", "yolo", "maskrcnn"])
-    parser.add_argument("--seg-path", default="sam2_b.pt")
+    parser.add_argument("--seg-path", default="models/sam2_b.pt")
     
     # Tracking
     parser.add_argument("--tracker", default="planar-kalman",
-                       choices=["sam2", "optical-flow", "kalman", "bytetrack", 
+                       choices=["sam2", "optical-flow", "kalman", 
                                "feature-homography", "ecc-homography", 
-                               "planar-kalman", "sam2-memory", "hybrid-flow"])
-    parser.add_argument("--fusion", action="store_true", 
-                       help="Use fusion of multiple trackers")
+                               "planar-kalman", "hybrid-flow"])
+
     parser.add_argument("--adaptive", action="store_true", 
                        help="Use adaptive tracking with confidence estimation")
     parser.add_argument("--motion-history", type=int, default=10,

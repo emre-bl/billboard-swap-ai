@@ -1,7 +1,7 @@
 """
 YOLOv8 Detection Training Script.
 
-Trains YOLOv8 variants (n, s, m, l, x) for billboard detection.
+Trains YOLOv8 variants (n, s, m) for billboard detection.
 """
 import argparse
 from ultralytics import YOLO
@@ -10,7 +10,6 @@ VARIANTS = {
     "n": "yolov8n.pt",
     "s": "yolov8s.pt", 
     "m": "yolov8m.pt",
-    "l": "yolov8l.pt",
 }
 
 def train_yolo_det(

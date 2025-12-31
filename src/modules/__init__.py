@@ -2,7 +2,7 @@
 Billboard Swap AI - Modules
 
 Provides:
-- segmentation: YOLOv8-seg, Mask R-CNN, GroundedSAM, SAM2
+- segmentation: YOLOv8-seg, Mask R-CNN, SAM2
 - tracking: SAM2, OpticalFlow, Cutie
 - replacement: Perspective transform, Kalman smoothing, edge blending
 - evaluation: IoU, mAP, precision, recall
@@ -20,16 +20,11 @@ from .tracking import (
     BaseTracker,
     SAM2Tracker,
     OpticalFlowTracker,
-    AdaptiveOpticalFlowTracker,
-    ByteTracker,
     FeatureHomographyTracker,
     ECCHomographyTracker,
     PlanarKalmanTracker,
-    SAM2MemoryTracker,
     HybridFlowTracker,
-    FusionTracker,
     create_tracker,
-    create_fusion_tracker,
 )
 
 from .replacement import (
@@ -43,11 +38,6 @@ from .replacement import (
 
 from .evaluation import (
     calculate_iou,
-    calculate_precision_recall,
-    calculate_ap,
-    calculate_map,
-    EvaluationMetrics,
-    DetectionResult,
 )
 
 # ...
@@ -63,16 +53,11 @@ __all__ = [
     "BaseTracker",
     "SAM2Tracker",
     "OpticalFlowTracker",
-    "AdaptiveOpticalFlowTracker",
-    "ByteTracker",
     "FeatureHomographyTracker",
     "ECCHomographyTracker",
     "PlanarKalmanTracker",
-    "SAM2MemoryTracker",
     "HybridFlowTracker",
-    "FusionTracker",
     "create_tracker",
-    "create_fusion_tracker",
     # Replacement
     "ReplacementEngine",
     "KalmanCornerSmoother",
@@ -82,9 +67,4 @@ __all__ = [
     "order_points",
     # Evaluation
     "calculate_iou",
-    "calculate_precision_recall",
-    "calculate_ap",
-    "calculate_map",
-    "EvaluationMetrics",
-    "DetectionResult",
 ]

@@ -51,10 +51,11 @@ Traditional post-production workflows face several challenges: (1) the labor-int
 This work addresses these challenges by developing an end-to-end automated pipeline for billboard replacement in videos. The proposed approach leverages recent advances in deep learning, specifically:
 
 \begin{itemize}
-    \item \textbf{Detection and Segmentation:} Fine-tuned YOLOv8-n-s-m models and zero-shot YOLO-World approaches for accurate billboard localization.
-    \item \textbf{Tracking:} Multiple tracking algorithms including SAM2 propagation, Kalman filtering, and optical flow methods for temporal mask consistency.
-    \item \textbf{Perspective Transformation:} Automated 4-corner extraction and homography-based warping for geometrically correct replacement.
-    \item \textbf{Post-Processing:} Temporal smoothing algorithms to eliminate flicker and ensure visual coherence.
+    \item \textbf{Detection:} Fine-tuned YOLOv8-n/s/m object detection models that predict bounding boxes around billboard regions. Additionally, zero-shot YOLO-World is evaluated for open-vocabulary detection without domain-specific training data. Detection provides the initial localization that guides subsequent processing stages.
+    \item \textbf{Segmentation:} Pixel-level mask prediction using fine-tuned YOLOv8-seg models that simultaneously predict bounding boxes and instance masks. Furthermore, SAM2 (Segment Anything Model 2) is integrated as a foundation model that accepts detection outputs (bounding boxes or points) as prompts to generate precise segmentation masks. This hybrid approach combines the detection accuracy of fine-tuned models with SAM2's zero-shot segmentation capability.
+    \item \textbf{Tracking:} Multiple tracking algorithms including SAM2 propagation with memory-based attention, Kalman filtering for smooth motion prediction, and optical flow methods for temporal mask consistency across video frames.
+    \item \textbf{Perspective Transformation:} Automated 4-corner extraction from segmentation masks and homography-based warping for geometrically correct replacement content insertion.
+    \item \textbf{Post-Processing:} Temporal smoothing algorithms including Kalman filtering and IIR cascaded filters to eliminate flicker and ensure visual coherence across frames.
 \end{itemize}
 
 The main contributions of this paper are:
@@ -69,16 +70,13 @@ The main contributions of this paper are:
 %=============================================================================
 \section{Related Work}
 
-The first step in the pipeline involves using object detection models to detect potential areas within each video frame where a new product can be inserted or existing products/ads can be replaced. YOLO (You Only Look Once) \cite{redmon2016yolo}, which employs a convolutional neural network (CNN) architecture, is a fast and effective single-stage object detection algorithm for both images and videos that re-frames object detection as a regression problem, and directly predicts bounding boxes and class probabilities for objects in a single pass through the network. These models were fine-tuned for billboard detection to compare accuracy.
+The process of automated billboard replacement relies on combining several established computer vision tasks. The most basic requirement is object detection to find where a billboard is in a frame. YOLO (You Only Look Once) \cite{redmon2016yolo} is the most popular choice for this because it is fast and easy to implement. Recent versions like YOLOv8 \cite{ultralytics2021} allow us to not only detect boxes but also get pixel-level masks through instance segmentation, which is a key part of our project.
 
-Once these regions of interest are detected, precise masks can be obtained by using image segmentation models. YOLO segmentation \cite{ultralytics2021}, an extension of the YOLO object detection framework, enables simultaneous object detection and segmentation, providing both bounding boxes and pixel-level masks for identified objects. Segment-Anything \cite{kirillov2023segment} is a new task, model, and dataset for image segmentation. The model is trained and available for use by prompting using bounding boxes, and can transfer zero-shot to new image distributions and tasks. Various combinations of these segmentation techniques with object detection were evaluated.
+For more complex shapes, the Segment Anything Model (SAM) \cite{kirillov2023segment} has changed how we think about segmentation. Instead of training a model for every specific object, SAM allows us to find objects by just giving it a box or a point prompt. Our work uses the newer SAM2 \cite{ravi2024sam2} variant, which is designed to handle videos by "remembering" objects from previous frames. This helps solve the problem of flickering masks in video sequences.
 
-After finding the precise mask of the desired surface in one frame, Video Object Segmentation (VOS) methods are used to track them across frames, in a semi-supervised setting where a first-frame annotation is provided, and the method segments objects in all other frames as accurately as possible. XMem \cite{cheng2022xmem} has been the leading architecture for VOS for long videos with unified feature memory stores inspired by the Atkinson-Shiffrin memory model. However, in 2024, the same authors introduced Cutie \cite{cheng2023cutie}. Cutie uses object-level memory reading instead of pixel-level memory reading like XMem \cite{cheng2022xmem}, and gives superior object tracking performance by putting the object representation from memory back into the video object segmentation result. In this work, Cutie was evaluated with zero-shot learning.
+Tracking is another area where many methods exist. Simple methods like Optical Flow or Kalman Filters \cite{kalman1960new} are very fast but often fail if the camera moves too quickly. More advanced methods like XMem \cite{cheng2022xmem} or Cutie \cite{cheng2023cutie} use deep learning to keep track of objects over long periods. We compare several of these to find the best balance between speed and accuracy for a real-time system.
 
-With the desired product placement instance masks detected and propagated over time, video in-painting techniques can be employed to seamlessly blend a new product or advertisement image into the tracked and segmented areas. In the simplest scenarios, such as when dealing with flat objects like billboards, perspective transformations provided by the OpenCV library \cite{bradski2000opencv} can be used with robust handling of contours and masks across frames. For a more generic in-painting, Stable Diffusion models \cite{rombach2022high} would work more seamlessly. Mixed results were observed with the pre-trained stable diffusion models with IP Adapter \cite{ye2023ipadapter}, which are presented in subsequent sections.
-
-Finally, inspiration was drawn from other works for end-to-end pipelines in such vision tasks. The Track Anything paper \cite{yang2023track} puts together a segmentation plus tracking pipeline using SAM and XMem. A project from Amazon \cite{bhargavi2023zero} demonstrates a pipeline to insert products in a cooking show. The pipeline proposed here, however, differs from Track-Anything as it combines automated detection of billboards before tracking (which Track-Anything does not), uses Cutie \cite{cheng2023cutie} instead of XMem \cite{cheng2022xmem}, and incorporates an in-painting step at the end. Also, as compared to \cite{bhargavi2023zero}, billboard replacement is not limited to specific environments in this approach. Models were also fine-tuned for billboard detection, and the best available tracking models for videos were utilized.
-
+Finally, for the actual replacement, most commercial systems use manual editing. Some researchers have started using generative models like Stable Diffusion \cite{rombach2022high} to "paint" new ads into videos. However, for billboards, a simple perspective transformation using the OpenCV library \cite{bradski2000opencv} is usually enough to get a realistic result. Our pipeline follows the inspiration of projects like "Track Anything" \cite{yang2023track}, but adds an automated detection step so the user doesn't have to click on the billboard manually.
 %=============================================================================
 % III. METHODOLOGY
 %=============================================================================
@@ -94,21 +92,51 @@ The pipeline consists of four sequential stages: Detection \& Segmentation, Trac
 
 \subsection{Stage 1: Detection and Segmentation}
 
-The first stage localizes billboards in video frames and generates precise segmentation masks. Two approaches are evaluated:
+The first stage localizes billboards in video frames and generates precise segmentation masks. This stage evaluates multiple approaches for both detection (bounding box prediction) and segmentation (pixel-level mask prediction).
 
-\subsubsection{Fine-Tuned YOLOv8-seg}
+\subsubsection{Detection Approaches}
 
-YOLOv8 variants (nano, small, medium) were fine-tuned on a custom billboard dataset collected from Roboflow public repositories and manually curated real-world images. The training process utilized standard augmentation techniques including HSV transforms, rotation, scaling, and mosaic augmentation.
-
-The segmentation output provides pixel-wise masks suitable for direct replacement. The loss function combines classification, bounding box regression, and mask prediction terms:
+\paragraph{Fine-Tuned YOLOv8 Detection}
+YOLOv8 detection variants (nano, small, medium) were fine-tuned on a large-scale billboard detection dataset comprising 3,798 images. The detection models predict bounding boxes and class confidence scores for billboard regions. Training utilized extensive data augmentation including HSV color-space transforms (Hue: $\pm0.015$, Saturation: $\pm0.7$, Value: $\pm0.4$), geometric distortions (rotation $\pm15^\circ$, shear $\pm5^\circ$, perspective $0.001$), and advanced regularization (Mosaic $p=1.0$, MixUp $p=0.15$, Random Erasing $p=0.4$). The detection loss combines classification and bounding box regression:
 
 \begin{equation}
-\mathcal{L} = \mathcal{L}_{cls} + \lambda_{box}\mathcal{L}_{box} + \lambda_{mask}\mathcal{L}_{mask}
+\mathcal{L}_{det} = \mathcal{L}_{cls} + \lambda_{box}\mathcal{L}_{box}
 \end{equation}
 
-\subsubsection{Zero-Shot YOLO-World}
+\paragraph{Zero-Shot YOLO-World}
+For scenarios without domain-specific training data, YOLO-Worldv2 is employed for open-vocabulary detection. The text prompt ``billboard'' guides the model to detect relevant objects without explicit training on billboard data. While zero-shot approaches offer deployment flexibility, experiments show accuracy gaps compared to fine-tuned models (see Section IV).
 
-For scenarios without training data, YOLO-Worldv2 is employed for open-vocabulary detection. The text prompt ``billboard'' guides the model to detect relevant objects without explicit training on billboard data. While zero-shot approaches offer flexibility, experiments show accuracy gaps compared to fine-tuned models (see Section IV).
+\subsubsection{Segmentation Approaches}
+
+\paragraph{Fine-Tuned YOLOv8 Segmentation}
+YOLOv8-seg extends the detection architecture with a segmentation head that produces pixel-level instance masks. These variants (nano, small, medium) were fine-tuned on a dedicated segmentation dataset of 485 images with precise polygon annotations. The segmentation output provides pixel-wise masks directly suitable for replacement. The loss function combines classification, bounding box regression, and mask prediction terms:
+
+\begin{equation}
+\mathcal{L}_{seg} = \mathcal{L}_{cls} + \lambda_{box}\mathcal{L}_{box} + \lambda_{mask}\mathcal{L}_{mask}
+\end{equation}
+
+\paragraph{Mask R-CNN}
+As a two-stage alternative, Mask R-CNN first generates region proposals using a Region Proposal Network (RPN), then performs classification, bounding box refinement, and mask prediction for each proposal. This architecture typically produces higher-quality mask boundaries at the cost of increased computational overhead.
+
+\subsubsection{Hybrid Detection + SAM2 Segmentation}
+
+A hybrid pipeline combines the detection accuracy of fine-tuned YOLOv8 models with SAM2's (Segment Anything Model 2) powerful zero-shot segmentation capabilities. In this approach:
+
+\begin{enumerate}
+    \item \textbf{Detection Phase:} YOLOv8-det predicts bounding boxes for billboard regions with high precision.
+    \item \textbf{Prompt Generation:} Detected bounding boxes are converted to SAM2 prompts (box prompts or center point prompts).
+    \item \textbf{SAM2 Segmentation:} SAM2's image encoder processes the frame, and the mask decoder generates precise segmentation masks conditioned on the detection prompts.
+\end{enumerate}
+
+SAM2 employs a Vision Transformer (ViT) backbone for image encoding and a lightweight mask decoder with cross-attention mechanisms. The model supports multiple prompting strategies:
+
+\begin{itemize}
+    \item \textbf{Box Prompts:} Detected bounding boxes directly guide mask generation.
+    \item \textbf{Point Prompts:} Center points of detections provide coarse object location.
+    \item \textbf{Mask Prompts:} Previous frame masks can refine current predictions for video applications.
+\end{itemize}
+
+This hybrid approach leverages SAM2's ability to produce high-quality masks from minimal prompts while benefiting from domain-specific detection training. Importantly, SAM2's video object segmentation mode enables mask propagation across frames using a memory attention mechanism, which is utilized in the tracking stage (Section III-B) for temporal consistency.
 
 \subsection{Stage 2: Tracking}
 
@@ -128,7 +156,7 @@ where $C_t$ is the tracking confidence at frame $t$, $\tau_{low}$ is the confide
 Six tracking approaches are evaluated:
 
 \begin{itemize}
-    \item \textbf{SAM2Tracker:} Uses SAM2's memory attention mechanism with multiple prompting strategies (box, mask, point) and automatic fallback on failure.
+    \item \textbf{SAM2Tracker:} Combines SAM2's promptable segmentation with a custom temporal history mechanism. It utilizes multiple prompting strategies, including bounding boxes and point sampling from previous masks, while incorporating an optical flow-based motion prediction fallback to maintain mask continuity during detection failures.
     \item \textbf{HybridFlowTracker:} Combines dense optical flow with feature-based matching for robust correspondence.
     \item \textbf{PlanarKalmanTracker:} Models billboard corners as a 16-dimensional state vector $\mathbf{x} = [x_1, y_1, ..., x_4, y_4, \dot{x}_1, \dot{y}_1, ..., \dot{x}_4, \dot{y}_4]^T$ with constant velocity dynamics.
     \item \textbf{FeatureHomographyTracker:} SIFT/ORB feature matching with RANSAC-based homography estimation.
@@ -194,7 +222,7 @@ computed in LAB color space for perceptual accuracy.
 
 \subsubsection{Enhanced Kalman Smoothing}
 
-An enhanced 16-dimensional Kalman filter with constant velocity model is used:
+An enhanced 16-dimensional Kalman filter with constant velocity model is used. The state vector is ordered as $\mathbf{x} = [x_1, y_1, x_2, y_2, x_3, y_3, x_4, y_4, \dot{x}_1, \dot{y}_1, ..., \dot{x}_4, \dot{y}_4]^T$, where the first 8 elements represent the $(x,y)$ positions of the 4 billboard corners and the last 8 elements represent their velocities:
 
 \begin{equation}
 \mathbf{x}_{t} = \begin{bmatrix} I_{8} & \Delta t \cdot I_{8} \\ 0 & I_{8} \end{bmatrix} \mathbf{x}_{t-1} + \mathbf{w}
@@ -203,7 +231,7 @@ An enhanced 16-dimensional Kalman filter with constant velocity model is used:
 \mathbf{z}_{t} = \begin{bmatrix} I_{8} & 0 \end{bmatrix} \mathbf{x}_{t} + \mathbf{v}
 \end{equation}
 
-where $I_8$ is the 8×8 identity matrix, and $\Delta t = 1$ for consecutive frames. The filter includes adaptive noise scaling based on innovation magnitude and automatic reset on large displacements ($> 200$ pixels).
+where $I_8$ is the $8 \times 8$ identity matrix, and $\Delta t = 1$ for consecutive frames. The filter includes adaptive noise scaling based on innovation magnitude and automatic reset on large displacements ($> 200$ pixels).
 
 \subsubsection{IIR Multi-Stage Smoothing}
 
@@ -213,13 +241,7 @@ As an alternative, cascaded Infinite Impulse Response (IIR) filtering is applied
 \end{equation}
 with $\alpha = 0.3$ applied across 2-3 stages for aggressive smoothing without excessive lag.
 
-
-%=============================================================================
-% IV. EXPERIMENTS AND RESULTS
-%=============================================================================
-\section{Experiments and Results}
-
-\subsection{Datasets}
+\subsection{Datasets and Experimental Setup}
 
 \subsubsection{Detection Dataset}
 
@@ -231,7 +253,13 @@ For segmentation tasks, a dedicated dataset of 485 images annotated with precise
 
 \subsubsection{Video Test Set}
 
-Four real-world videos were used for testing purposes, each exhibiting distinct characteristics. The first video contains a stationary billboard with dynamic background changes. The second video features a billboard occupying the majority of the frame with slow camera movement. The third video depicts a zoom-in sequence on a distant billboard, testing detection performance across varying scales. The fourth video contains a small billboard fixed to a moving vehicle, recorded from a side-view perspective to challenge tracking capabilities under motion. These diverse scenarios facilitated a detailed performance comparison of both the detection models and tracking algorithms.
+Four real-world videos were used for testing purposes, each exhibiting distinct characteristics. The first video contains a stationary billboard with dynamic background changes. The second video features a billboard occupying the majority of the frame with slow camera movement, as shown in Figure \ref{fig:qualitative}. The third video depicts a zoom-in sequence on a distant billboard, testing detection performance across varying scales. The fourth video contains a digital LED billboard with constantly changing content (Figure \ref{fig:qualitative2}), presenting additional challenges for tracking algorithms that rely on appearance consistency across frames. These diverse scenarios facilitated a detailed performance comparison of both the detection models and tracking algorithms.
+
+
+%=============================================================================
+% IV. EXPERIMENTS AND RESULTS
+%=============================================================================
+\section{Experiments and Results}
 
 \subsection{Detection Results}
 
@@ -275,21 +303,21 @@ Table \ref{tab:segmentation} compares segmentation approaches. Fine-tuned YOLOv8
 \toprule
 \textbf{Model} & \textbf{P} & \textbf{R} & \textbf{AP50} & \textbf{AP50-95} \\
 \midrule
-YOLOv8n-seg & 0.786 & 0.684 & \textbf{0.672} & \textbf{0.542} \\
-YOLOv8s-seg & \textbf{0.819} & 0.512 & 0.586 & 0.442 \\
+YOLOv8n-seg & 0.786 & \textbf{0.684} & \textbf{0.672} & 0.542 \\
+YOLOv8s-seg & 0.819 & 0.512 & 0.586 & 0.442 \\
 YOLOv8m-seg & 0.693 & 0.605 & 0.636 & 0.462 \\
-YOLOv8+SAM2 & 0.307 & 0.535 & 0.307 & 0.264 \\
-Mask R-CNN & 0.397 & \textbf{0.721} & 0.397 & 0.347 \\
+Mask R-CNN & \textbf{0.867} & 0.605 & 0.626 & \textbf{0.531} \\
+YOLOv8+SAM2 & 0.407 & 0.512 & 0.360 & 0.284 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsubsection{Key Findings in Segmentation}
 \begin{itemize}
-    \item \textbf{Optimal Architecture:} YOLOv8n-seg remains the top-performing model with an \textbf{AP50 of 0.672}, significantly outperforming larger architectures and traditional benchmarks. This reinforces that lightweight models generalize better on domain-specific datasets with limited samples (485 images).
-    \item \textbf{Recall vs. Precision Trade-off:} Mask R-CNN achieved the highest overall recall (\textbf{0.721}), indicating superior capability in identifying candidate billboard regions. However, its low precision (\textbf{0.397}) and AP50 result in a high rate of false positives, making it less suitable for automated replacement than the YOLOv8 variants.
-    \item \textbf{Boundary and Mask Fidelity:} YOLOv8n-seg continues to lead in mask quality with an \textbf{AP50-95 of 0.542}. Compared to Mask R-CNN's 0.347, the Nano variant provides substantially more accurate pixel-level boundaries, which is a prerequisite for seamless homography-based content warping.
-    \item \textbf{Foundation Model Benchmark:} Both the YOLOv8+SAM2 pipeline and Mask R-CNN underperformed relative to fine-tuned YOLOv8 models. This suggests that without extensive task-specific optimization, heavy or generalized architectures struggle with the geometric constraints and environmental variations typical of billboard segmentation.
+    \item \textbf{Optimal Architecture:} YOLOv8n-seg achieves the highest AP50 (\textbf{0.672}) with the best recall (\textbf{0.684}), demonstrating that lightweight models generalize effectively on domain-specific datasets with limited samples (485 images).
+    \item \textbf{Mask R-CNN Performance:} After proper AP calculation using PR curves, Mask R-CNN shows strong results with the highest precision (\textbf{0.867}) and competitive AP50-95 (\textbf{0.531}). This indicates that two-stage detectors can achieve high-quality mask boundaries when properly trained.
+    \item \textbf{Boundary and Mask Fidelity:} YOLOv8n-seg leads in detection-weighted accuracy (AP50: 0.672), while Mask R-CNN excels in stricter IoU thresholds (AP50-95: 0.531), suggesting complementary strengths for different application requirements.
+    \item \textbf{YOLOv8+SAM2 Pipeline:} The detection+segmentation pipeline shows lower benchmark scores (AP50: 0.360) due to error propagation from detection to segmentation. However, qualitative testing reveals that SAM2 produces high-quality masks when provided with accurate bounding boxes, making it valuable for video applications where per-frame detection is feasible.
 \end{itemize}
 
 \subsection{Tracking Results}
@@ -300,7 +328,7 @@ Table \ref{tab:tracking} presents tracking algorithm performance across the vide
     \item \textbf{Mean IoU:} Intersection over Union between tracked and reference masks.
     \item \textbf{Success@0.5:} Percentage of frames with IoU $> 0.5$.
     \item \textbf{Failures:} Frames with IoU $< 0.5$ indicating significant tracking degradation.
-    \item \textbf{FPS:} Processing speed on NVIDIA GPU.
+    \item \textbf{FPS:} Processing speed benchmarked on an NVIDIA RTX 4070 12GB GPU with AMD Ryzen 5 5600X 6-core processor.
 \end{itemize}
 
 \begin{equation}
@@ -344,6 +372,12 @@ Figure \ref{fig:qualitative} shows example replacement results. The pipeline suc
 \label{fig:qualitative}
 \end{figure}
 
+\begin{figure}[htbp]
+\centerline{\includegraphics[width=\columnwidth]{comparison2.png}}
+\caption{Additional replacement example demonstrating the pipeline's robustness across different viewing angles and lighting conditions.}
+\label{fig:qualitative2}
+\end{figure}
+
 %=============================================================================
 % V. DISCUSSION AND FUTURE WORK
 %=============================================================================
@@ -352,6 +386,20 @@ Figure \ref{fig:qualitative} shows example replacement results. The pipeline suc
 \subsection{Fine-Tuned vs Zero-Shot Detection}
 
 Experiments demonstrate that fine-tuned models significantly outperform zero-shot approaches for domain-specific billboard detection. YOLOv8m achieves 0.736 AP50 compared to 0.598 for YOLO-Worldv2, a +0.138 improvement. However, zero-shot models maintain value for rapid prototyping or scenarios where training data is unavailable.
+
+\subsection{Tracking vs Per-Frame Segmentation}
+
+While the tracking benchmark results (Table \ref{tab:tracking}) demonstrate that algorithms such as PlanarKalmanTracker achieve high IoU scores (0.915) with excellent processing speeds (283.7 FPS), qualitative evaluation on the test video sequences revealed an important insight: performing detection and segmentation on every frame consistently produced superior visual quality compared to tracking-based mask propagation.
+
+The primary reasons for this observation include:
+
+\begin{itemize}
+    \item \textbf{Drift Accumulation:} Tracking algorithms, even with periodic keyframe re-detection, accumulate small errors over time that manifest as jittery or misaligned mask boundaries.
+    \item \textbf{Motion Robustness:} Per-frame detection+segmentation handles rapid camera motion and viewpoint changes more gracefully, as each frame is processed independently without relying on temporal correspondence.
+    \item \textbf{SAM2 Performance Gap:} Interestingly, while SAM2 showed relatively lower performance in the static segmentation benchmark (AP50: 0.307 in Table \ref{tab:segmentation}), it demonstrated significantly better results when used in the detect+segment pipeline with YOLOv8m-provided bounding boxes. This suggests that SAM2's strength lies in its prompt-based segmentation capability rather than standalone detection, making the YOLOv8+SAM2 combination particularly effective for video applications.
+\end{itemize}
+
+These findings suggest that for applications prioritizing visual quality over processing speed, per-frame detection+segmentation may be preferable despite the computational overhead. Hybrid approaches that use tracking for intermediate frames while performing full segmentation at regular intervals offer a practical compromise.
 
 \subsection{Current Limitations}
 
@@ -362,7 +410,7 @@ Several limitations affect pipeline performance:
     \item \textbf{Extreme Viewing Angles:} Billboards viewed at acute angles suffer from resolution loss after perspective transformation.
     \item \textbf{Occlusion Handling:} Partial occlusions (e.g., pedestrians, vehicles) cause tracking failures and visual artifacts.
     \item \textbf{Dynamic Content:} LED billboards with changing content confuse tracking algorithms that assume static appearance.
-    \item \textbf{Computational Cost:} Transformer Based  learning trackers (CUTIE) require large VRAM GPU acceleration.
+    \item \textbf{Computational Cost:} Transformer-based segmentation models (SAM2) require GPU acceleration with adequate VRAM (12GB+ recommended).
 \end{itemize}
 
 \subsection{Future Improvements}
@@ -371,36 +419,22 @@ Several directions could enhance pipeline capabilities:
 
 \subsubsection{Diffusion-Based Image Replacement}
 
-The current implementation uses OpenCV's perspective transformation and alpha blending for content replacement. While effective for static image overlays, this approach has limitations: (1) hard edges at mask boundaries, (2) lighting inconsistencies between replaced content and background, and (3) inability to synthesize contextually appropriate content.
+The current implementation uses OpenCV's perspective transformation and alpha blending for content replacement. While effective for static image overlays, this approach has limitations such as hard edges at mask boundaries and lighting inconsistencies. Future versions could leverage diffusion models like Stable Diffusion for inpainting, enabling seamless blending with scene context. Text-to-image capabilities would allow generating novel billboard content from prompts without pre-existing assets. The main trade-off is computational cost, as diffusion-based methods require significantly more processing time compared to geometric transformation.
 
-Future versions could leverage diffusion models for more sophisticated replacement:
+\subsubsection{Multi-Billboard Tracking}
 
-\begin{itemize}
-    \item \textbf{Stable Diffusion Inpainting:} Using the detected billboard mask as an inpainting region, diffusion models can generate replacement content that seamlessly blends with surrounding context. The ControlNet \cite{zhang2023controlnet} architecture enables conditioning on edge maps or depth information for perspective-aware generation.
-    
-    \item \textbf{Text-to-Image Replacement:} Rather than warping a fixed replacement image, diffusion models can generate novel billboard content from text prompts (e.g., ``advertisement for coffee brand''), enabling dynamic content creation without pre-existing assets.
-    
-    \item \textbf{Harmonization:} Post-replacement harmonization networks such as Harmonizer \cite{cong2022harmonizer} can adjust color temperature, lighting direction, and contrast to match the replaced content with the original scene, eliminating visual discontinuities.
-    
-    \item \textbf{Video Diffusion Models:} Recent advances in video diffusion (e.g., Stable Video Diffusion) enable temporally consistent inpainting across frames, potentially eliminating the need for separate tracking and smoothing stages.
-\end{itemize}
+The current pipeline processes a single billboard per video. Extending to simultaneous tracking of multiple billboards would require association algorithms such as SORT or DeepSORT to maintain identity across frames and handle billboard entries/exits from the scene.
 
-The main trade-off is computational cost: diffusion-based methods require significantly more processing time compared to geometric transformation, making real-time applications challenging without specialized hardware acceleration.
+\subsubsection{Occlusion-Aware Replacement}
 
-\subsubsection{Additional Improvements}
-
-\begin{itemize}
-    \item \textbf{Multi-Billboard Tracking:} Extending to simultaneous tracking of multiple billboards using association algorithms such as SORT or DeepSORT.
-    \item \textbf{Occlusion-Aware Replacement:} Leveraging depth estimation (MiDaS, ZoeDepth) or instance segmentation to properly layer occluding objects over replaced content.
-    \item \textbf{Real-Time Optimization:} Model distillation, TensorRT optimization, and INT8 quantization for live video processing on edge devices.
-\end{itemize}
+Partial occlusions by pedestrians or vehicles currently cause visual artifacts in the replaced content. Leveraging depth estimation models (MiDaS, ZoeDepth) or instance segmentation could enable proper layering of occluding objects over the replaced billboard content, significantly improving visual realism in complex scenes.
 
 %=============================================================================
 % VI. CONCLUSION
 %=============================================================================
 \section{Conclusion}
 
-This paper presented an automated pipeline for billboard detection, tracking, and replacement in video content. Comprehensive evaluation demonstrates that fine-tuned YOLOv8 models significantly outperform zero-shot approaches for domain-specific detection (0.736 vs. 0.598 AP50). For tracking, HybridFlowTracker provides the best accuracy (0.795 mean IoU) while PlanarKalmanTracker enables real-time processing at 273.6 FPS.
+This paper presented an automated pipeline for billboard detection, tracking, and replacement in video content. Comprehensive evaluation demonstrates that fine-tuned YOLOv8 models significantly outperform zero-shot approaches for domain-specific detection (0.736 vs. 0.598 AP50). For tracking, PlanarKalmanTracker achieves both the highest accuracy (0.915 mean IoU) and fastest processing speed (283.7 FPS), with only 1 tracking failure across 379 frames, making it ideal for real-time billboard replacement applications.
 
 The integrated pipeline successfully automates a traditionally manual and expensive post-production task, enabling scalable content localization and dynamic advertising applications. Future work will focus on handling occlusions, improving boundary blending through generative models, and optimizing for real-time deployment.
 
@@ -408,29 +442,18 @@ The integrated pipeline successfully automates a traditionally manual and expens
 % REFERENCES
 %=============================================================================
 \begin{thebibliography}{00}
-\bibitem{youtube8m} S. Abu-El-Haija et al., ``Youtube-8m: A large-scale video classification benchmark,'' arXiv preprint arXiv:1609.08675, 2016.
-\bibitem{roboflow_billboard} Arslan, ``Billboard dataset,'' https://universe.roboflow.com/arslan-ongr8/billboard-xlvz1, Sep. 2022. Accessed: 2024-06-02.
 \bibitem{bhargavi2023zero} D. Bhargavi, K. Sindwani, and S. Gholami, ``Zero-shot virtual product placement in videos,'' in \emph{ACM IMX}, 2023.
 \bibitem{bradski2000opencv} G. Bradski, ``The OpenCV Library,'' \emph{Dr. Dobb's Journal of Software Tools}, 2000.
+\bibitem{kalman1960new} R. E. Kalman, ``A New Approach to Linear Filtering and Prediction Problems,'' \emph{Journal of Basic Engineering}, vol. 82, no. 1, pp. 35--45, 1960.
 \bibitem{cheng2023cutie} H. K. Cheng, S. W. Oh, B. Price, J.-Y. Lee, and A. Schwing, ``Putting the object back into video object segmentation,'' 2024.
 \bibitem{cheng2022xmem} H. K. Cheng and A. G. Schwing, ``XMem: Long-Term Video Object Segmentation with an Atkinson-Shiffrin Memory Model,'' in \emph{ECCV}, 2022.
-\bibitem{segment_track_anything} Y. Cheng et al., ``Segment and track anything,'' 2023.
-\bibitem{ultralytics_yolov8} G. Jocher, ``YOLOv8,'' https://github.com/ultralytics/ultralytics, 2022. Accessed: 2023-05-16.
 \bibitem{ultralytics2021} G. Jocher, A. Chaurasia, and J. Qiu, ``Ultralytics YOLO,'' Jan. 2023.
 \bibitem{kirillov2023segment} A. Kirillov et al., ``Segment Anything,'' in \emph{ICCV}, 2023.
-\bibitem{maskdino} F. Li et al., ``Mask DINO: Towards a Unified Transformer-based Framework for Object Detection and Segmentation,'' 2022.
-\bibitem{fuseformer} R. Liu et al., ``FuseFormer: Fusing Fine-Grained Information in Transformers for Video Inpainting,'' in \emph{ICCV}, 2021.
-\bibitem{dataset_billboard_video_2} C. PP, ``Dataset - billboard video 2 dataset,'' https://universe.roboflow.com/cs231n-pp/dataset-billboard-video-2, May 2024. Accessed: 2024-06-02.
-\bibitem{dataset_billboard_video_3} C. PP, ``Dataset - billboard video 3 dataset,'' https://universe.roboflow.com/cs231n-pp/dataset-billboard-video-3, May 2024. Accessed: 2024-06-02.
-\bibitem{dataset_sports_videos} C. PP, ``Sports videos dataset,'' https://universe.roboflow.com/cs231n-pp/sports-videos, May 2024. Accessed: 2024-06-02.
-\bibitem{dataset_billboards_4zz9y} I. Processing, ``Billboards dataset,'' https://universe.roboflow.com/image-processing-awivd/billboards-4zz9y, Apr. 2024. Accessed: 2024-06-02.
 \bibitem{redmon2016yolo} J. Redmon, S. K. Divvala, R. B. Girshick, and A. Farhadi, ``You only look once: Unified, real-time object detection,'' \emph{CoRR}, abs/1506.02640, 2015.
-\bibitem{roadeye} RoadEye, ``Roadeye dataset,'' https://universe.roboflow.com/roadeye/roadeye, Nov. 2022. Accessed: 2024-06-02.
 \bibitem{rombach2022high} R. Rombach et al., ``High-Resolution Image Synthesis with Latent Diffusion Models,'' in \emph{CVPR}, pp. 10684–10695, 2022.
-\bibitem{sttn} A. Siarohin et al., ``STTN: Space-time transformer networks for video restoration,'' in \emph{CVPR}, pp. 3051–3060, 2020.
-\bibitem{dataset_billboard_detection} Test, ``Billboard detection dataset,'' https://universe.roboflow.com/test-c8wix/billboard-detection-uo2ld, Mar. 2023. Accessed: 2024-06-02.
+\bibitem{ravi2024sam2} N. Ravi, V. Gabeur, Y.-T. Hu, R. Hu, C. Ryali, T. Ma, H. Khedr, R. Rädle, C. Rolland, L. Gustafson, E. Mintun, J. Pan, K. V. Alwala, N. Carion, C.-Y. Wu, R. Girshick, P. Dollár, and C. Feichtenhofer, ``SAM 2: Segment Anything in Images and Videos,'' arXiv preprint arXiv:2408.00714, 2024.
+\bibitem{sharma2024diffusion} A. Sharma, M. Weiss, P. Navarathna, A. Mahdavi-Amiri, and Y. Aksoy, ``Automated Virtual Product Placement and Assessment in Images using Diffusion Models,'' arXiv preprint arXiv:2407.01117, 2024.
 \bibitem{yang2023track} J. Yang et al., ``Track Anything: Segment Anything Meets Videos,'' arXiv preprint arXiv:2304.11968, 2023.
-\bibitem{video_instance_seg} L. Yang, Y. Fan, and N. Xu, ``Video instance segmentation,'' in \emph{ICCV}.
 \bibitem{ye2023ipadapter} H. Ye, J. Zhang, S. Liu, X. Han, and W. Yang, ``IP-Adapter: Text Compatible Image Prompt Adapter for Text-to-Image Diffusion Models,'' 2023.
 \end{thebibliography}
 \end{document}

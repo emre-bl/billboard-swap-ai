@@ -2,7 +2,7 @@
 Unified Segmentation Module for Billboard Detection.
 
 Supports:
-- YOLOv8-seg (n, s, m, l, x variants) - Fine-tuned
+- YOLOv8-seg (n, s, m variants) - Fine-tuned
 - Mask R-CNN (ResNet50-FPN) - Fine-tuned  
 - SAM2 - Zero-shot with auto-prompting
 """
@@ -202,7 +202,7 @@ class MaskRCNNSegmenter(BaseSegmenter):
 class SAM2Segmenter(BaseSegmenter):
     """SAM2 segmentation model."""
     
-    def __init__(self, model_path: str = "sam2_b.pt"):
+    def __init__(self, model_path: str = "models/sam2_b.pt"):
         from ultralytics import SAM
         self.model = SAM(model_path)
         
